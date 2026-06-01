@@ -3,16 +3,18 @@ import { InjectConnection, MongooseModule } from '@nestjs/mongoose';
 import { Connection } from 'mongoose';
 
 import { MONGO_URL } from 'src/common/constants/app.constants';
+import { User, UserSchema } from './schemas/users.schema';
 
 @Global()
 @Module({
   imports: [
-    MongooseModule.forRoot(MONGO_URL as string, {
-      onConnectionCreate: (connection) => {
-        console.log('[LOG] MongoDB Connected');
-        return connection;
-      },
-    }),
+    MongooseModule.forRoot(MONGO_URL as string),
+    MongooseModule.forFeature([
+      {
+        name: User.name,
+        schema: UserSchema
+      }
+    ])
   ],
   exports: [MongooseModule],
 })

@@ -13,8 +13,8 @@ export class AuthController {
   }
 
   @Get()
-  findAll() {
-    return this.authService.findAll();
+  async findAll() {
+    return await this.authService.findAll();
   }
 
   @Get(':id')
