@@ -2,14 +2,23 @@ import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/commo
 import { AuthService } from './auth.service';
 import { CreateAuthDto } from './dto/create-auth.dto';
 import { UpdateAuthDto } from './dto/update-auth.dto';
+import { LoginDto } from './dto/login.dto';
+import { Public } from 'src/common/decorators/public.decorator';
 
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  @Post()
-  create(@Body() createAuthDto: CreateAuthDto) {
-    return this.authService.create(createAuthDto);
+  @Post('Register')
+  @Public()
+  async register(@Body() body: CreateAuthDto) {
+    return this.authService.register(body);
+  }
+
+  @Post('Login')
+  @Public()
+  async login(@Body() body : LoginDto ) {
+    return this.authService.login(body);
   }
 
   @Get()

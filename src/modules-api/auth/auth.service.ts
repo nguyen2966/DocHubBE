@@ -4,17 +4,18 @@ import { UpdateAuthDto } from './dto/update-auth.dto';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { User, UserDocument } from 'src/modules-system/mongodb/schemas/users.schema';
+import { LoginDto } from './dto/login.dto';
 
 @Injectable()
 export class AuthService {
   constructor(@InjectModel(User.name) private userModel: Model<UserDocument>){}
 
-  create(createAuthDto: CreateAuthDto) {
-    return this.userModel.create({
-      email: 'admin@gmail.com',
-      password: '123456',
-      fullName: 'Admin',
-    });
+  async register(body: CreateAuthDto) {
+    return "Register success";
+  }
+
+  async login(body: LoginDto){
+    return "Login success";
   }
 
   async findAll() {

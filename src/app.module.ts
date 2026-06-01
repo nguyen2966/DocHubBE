@@ -10,6 +10,8 @@ import { ActivityModule } from './modules-api/activity/activity.module';
 import { SearchModule } from './modules-api/search/search.module';
 import { TokenModule } from './modules-system/token/token.module';
 import { MongoDbModule } from './modules-system/mongodb/mongodb.module';
+import { APP_GUARD } from '@nestjs/core';
+import { ProtectGuard } from './common/guards/protect.guard';
 
 
 @Module({
@@ -24,6 +26,11 @@ import { MongoDbModule } from './modules-system/mongodb/mongodb.module';
             MongoDbModule
           ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService,
+    {
+      provide: APP_GUARD,
+      useClass: ProtectGuard
+    },
+  ],
 })
 export class AppModule {}
