@@ -20,7 +20,7 @@ export class AuthService {
     private readonly userModel: Model<User>,
     private readonly tokenService: TokenService,
     private readonly emailService: EmailService,
-  ) {}
+  ) { }
 
   async register(dto: RegisterDto): Promise<{ message: string }> {
     const existing = await this.userModel.findOne({
@@ -118,9 +118,24 @@ export class AuthService {
   ): Promise<{ message: string }> {
     const expiresAt = new Date(accessTokenExp * 1000)
     await Promise.all([
-      this.tokenService.revokeAccessToken(jti, expiresAt,'logout'),
+      this.tokenService.revokeAccessToken(jti, expiresAt, 'logout'),
       this.tokenService.revokeRefreshToken(refreshToken),
     ])
     return { message: 'Log out successfully.' }
+  }
+
+  async resendVerificationEmail(email: string): Promise<{ message: string }> {
+    const user = await this.userModel.findOne({ email: email.toLowerCase() })
+
+    // Không tiết lộ email có tồn tại hay không
+    if (!user || user.isEmailVerified) {
+      return { message: 'Nếu email tồn tại và chưa xác thực, bạn sẽ nhận được email trong giây lát.' }
+    }
+
+    this.emailService
+      .sendVerificationEmail(user._id.toString(), user.email)
+      .catch((err) => console.error('Failed to enqueue resend verification email', err))
+
+    return { message: 'Nếu email tồn tại và chưa xác thực, bạn sẽ nhận được email trong giây lát.' }
   }
 }
