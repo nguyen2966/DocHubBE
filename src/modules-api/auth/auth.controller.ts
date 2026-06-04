@@ -1,43 +1,70 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
-import { AuthService } from './auth.service';
-import { CreateAuthDto } from './dto/create-auth.dto';
-import { UpdateAuthDto } from './dto/update-auth.dto';
-import { LoginDto } from './dto/login.dto';
-import { Public } from 'src/common/decorators/public.decorator';
+import {
+  Controller,
+  Post,
+  Body,
+  Get,
+  Query,
+  Req,
+  Res,
+} from '@nestjs/common'
+import { type Response, type Request } from 'express'
+import { AuthService } from './auth.service'
+import { RegisterDto } from './dto/register.dto'
+import { LoginDto } from './dto/login.dto'
+import { Public } from 'src/common/decorators/public.decorator'
+import { ACCESS_TOKEN_COOKIE_OPTIONS, REFRESH_TOKEN_COOKIE_OPTIONS } from 'src/common/constants/cookie.constants'
+
 
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  @Post('Register')
+  @Post('register')
   @Public()
-  async register(@Body() body: CreateAuthDto) {
-    return this.authService.register(body);
+  async register(@Body() dto: RegisterDto) {
+    return this.authService.register(dto)
   }
 
-  @Post('Login')
+  @Get('verify-email')
   @Public()
-  async login(@Body() body : LoginDto ) {
-    return this.authService.login(body);
+  async verifyEmail(@Query('token') token: string) {
+    return this.authService.verifyEmail(token)
   }
 
-  @Get()
-  async findAll() {
-    return await this.authService.findAll();
+  @Post('login')
+  @Public()
+  async login(@Body() dto: LoginDto, @Req() req: Request, @Res({ passthrough:true }) res: Response) {
+    const deviceInfo = {
+      userAgent: req.headers['user-agent'] ?? '',
+      ipAddress: req.ip ?? '',
+    }
+    const result = await this.authService.login(dto, deviceInfo);
+    res.cookie('accessToken', result.accessToken, ACCESS_TOKEN_COOKIE_OPTIONS);
+    res.cookie('refreshToken', result.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS);
+
+    return result;
   }
 
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.authService.findOne(+id);
+  @Post('refresh-token')
+  @Public()
+  async refreshToken( @Req() req: Request, @Res({ passthrough:true }) res: Response) {
+    const deviceInfo = {
+      userAgent: req.headers['user-agent'] ?? '',
+      ipAddress: req.ip ?? '',
+    }
+    const refreshToken = req.cookies?.refreshToken;
+    const result = await this.authService.refreshToken(refreshToken, deviceInfo);
+    res.cookie('accessToken', result.accessToken, ACCESS_TOKEN_COOKIE_OPTIONS);
+    res.cookie('refreshToken', result.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS);
+
+    return result;
   }
 
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateAuthDto: UpdateAuthDto) {
-    return this.authService.update(+id, updateAuthDto);
-  }
-
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.authService.remove(+id);
+  @Post('logout')
+  async logout( @Req() req: Request) {
+    // JwtAuthGuard đã attach user và decoded token vào req
+    const { jti, exp, sub } = (req as any).tokenPayload;
+    const refreshToken = req.cookies?.refreshToken;
+    return this.authService.logout(jti, sub, exp, refreshToken);
   }
 }
