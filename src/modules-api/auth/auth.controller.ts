@@ -65,6 +65,6 @@ export class AuthController {
     // JwtAuthGuard đã attach user và decoded token vào req
     const { jti, exp, sub } = (req as any).tokenPayload;
     const refreshToken = req.cookies?.refreshToken;
-    return this.authService.logout(jti, sub, exp, refreshToken);
+    return this.authService.logout(jti, exp, refreshToken);
   }
 }
