@@ -1,13 +1,14 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Inject } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { RefreshToken } from '../mongodb/schemas/refresh-tokens';
-import { RevokedAccessToken } from '../mongodb/schemas/revoked-access-token';
 import { REFRESH_TOKEN_TTL_DAYS } from 'src/common/constants/app.constants';
 import { TokenPayload } from './token.type';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { type Cache } from 'cache-manager';
 
 @Injectable()
 export class TokenService {
@@ -15,8 +16,8 @@ export class TokenService {
     private readonly jwtService: JwtService,
     @InjectModel(RefreshToken.name)
     private readonly refreshTokenModel: Model<RefreshToken>,
-    @InjectModel(RevokedAccessToken.name)
-    private readonly revokedModel: Model<RevokedAccessToken>,
+    @Inject(CACHE_MANAGER)
+    private readonly cacheManager: Cache,
   ) { }
 
   // ─── Helpers ──────────────────────────────────────────────
@@ -42,24 +43,22 @@ export class TokenService {
 
   async revokeAccessToken(
     jti: string,
-    userId: string,
     expiresAt: Date,
     reason: string = 'logout',
   ): Promise<void> {
-    await this.revokedModel.create({
-      jti,
-      userId: new Types.ObjectId(userId),
-      expiresAt,
-      revokedAt: new Date(),
-      revokedReason: reason,
-    })
+    const ttlSeconds = Math.floor((expiresAt.getTime() - Date.now()) / 1000)
+
+    // TTL âm nghĩa token đã hết hạn tự nhiên — không cần blacklist
+    if (ttlSeconds <= 0) return
+
+    // Key: "revoked_at:<jti>", value tuỳ ý, TTL = thời gian còn lại của token
+    await this.cacheManager.set(`revoked_at:${jti}`, reason, ttlSeconds * 1000);
   }
 
   async isAccessTokenRevoked(jti: string): Promise<boolean> {
-    const found = await this.revokedModel.findOne({ jti }).lean()
-    return !!found
+    const value = await this.cacheManager.get(`revoked_at:${jti}`)
+    return value !== null && value !== undefined
   }
-
   // ─── Refresh Token ────────────────────────────────────────
 
   async generateTokenPair(

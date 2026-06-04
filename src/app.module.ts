@@ -16,7 +16,9 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { EmailModule } from './modules-system/email/email.module';
 import { BullModule } from '@nestjs/bullmq';
 import { RedisModule } from './modules-system/redis/redis.module';
-
+import { CacheModule } from '@nestjs/cache-manager';
+import { redisStore } from 'cache-manager-ioredis';
+import { REDIS_HOST, REDIS_PORT } from './common/constants/app.constants';
 
 @Module({
   imports: [AuthModule,
@@ -35,7 +37,15 @@ import { RedisModule } from './modules-system/redis/redis.module';
                 port: 6380,
               },
             }),
-            RedisModule
+            RedisModule,
+            CacheModule.registerAsync({
+              isGlobal: true,
+              useFactory: () => ({
+                store: redisStore,
+                host: REDIS_HOST,
+                port: REDIS_PORT,
+              })
+            }),
           ],
   controllers: [AppController],
   providers: [AppService,

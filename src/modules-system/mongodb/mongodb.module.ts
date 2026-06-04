@@ -5,7 +5,6 @@ import { Connection } from 'mongoose';
 import { MONGO_URL } from 'src/common/constants/app.constants';
 import { User, UserSchema } from './schemas/users';
 import { RefreshToken, RefreshTokenSchema } from './schemas/refresh-tokens';
-import { RevokedAccessToken, RevokedAccessTokenSchema } from './schemas/revoked-access-token';
 import { Role, RoleSchema } from './schemas/role';
 
 @Global()
@@ -15,7 +14,6 @@ import { Role, RoleSchema } from './schemas/role';
     MongooseModule.forFeature([
       { name: User.name, schema: UserSchema},
       { name: RefreshToken.name, schema: RefreshTokenSchema },
-      { name: RevokedAccessToken.name, schema: RevokedAccessTokenSchema },
       { name: Role.name, schema: RoleSchema },
     ])
   ],

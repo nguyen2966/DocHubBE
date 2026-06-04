@@ -113,13 +113,12 @@ export class AuthService {
 
   async logout(
     jti: string,
-    userId: string,
     accessTokenExp: number,
     refreshToken: string,
   ): Promise<{ message: string }> {
     const expiresAt = new Date(accessTokenExp * 1000)
     await Promise.all([
-      this.tokenService.revokeAccessToken(jti, userId, expiresAt, 'logout'),
+      this.tokenService.revokeAccessToken(jti, expiresAt,'logout'),
       this.tokenService.revokeRefreshToken(refreshToken),
     ])
     return { message: 'Log out successfully.' }
