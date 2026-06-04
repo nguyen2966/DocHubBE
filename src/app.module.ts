@@ -10,8 +10,12 @@ import { ActivityModule } from './modules-api/activity/activity.module';
 import { SearchModule } from './modules-api/search/search.module';
 import { TokenModule } from './modules-system/token/token.module';
 import { MongoDbModule } from './modules-system/mongodb/mongodb.module';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ProtectGuard } from './common/guards/protect.guard';
+import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { EmailModule } from './modules-system/email/email.module';
+import { BullModule } from '@nestjs/bullmq';
+import { RedisModule } from './modules-system/redis/redis.module';
 
 
 @Module({
@@ -23,7 +27,15 @@ import { ProtectGuard } from './common/guards/protect.guard';
             ActivityModule, 
             SearchModule, 
             TokenModule,
-            MongoDbModule
+            MongoDbModule,
+            EmailModule,
+            BullModule.forRoot({
+              connection: {
+                host: 'localhost',
+                port: 6380,
+              },
+            }),
+            RedisModule
           ],
   controllers: [AppController],
   providers: [AppService,
@@ -31,6 +43,10 @@ import { ProtectGuard } from './common/guards/protect.guard';
       provide: APP_GUARD,
       useClass: ProtectGuard
     },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: LoggingInterceptor
+    }
   ],
 })
 export class AppModule {}
