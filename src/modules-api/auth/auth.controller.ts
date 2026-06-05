@@ -31,10 +31,18 @@ export class AuthController {
   @Get('verify-email')
   async verifyEmail(
     @Query('token') token: string,
+    @Req() req: Request,
     @Res() res: Response,
   ) {
     try {
-      await this.authService.verifyEmail(token)
+      const deviceInfo = {
+        userAgent: req.headers['user-agent'] ?? '',
+        ipAddress: req.ip ?? '',
+      }
+      const result = await this.authService.verifyEmail(token, deviceInfo);
+      res.cookie('accessToken', result.accessToken, ACCESS_TOKEN_COOKIE_OPTIONS);
+      res.cookie('refreshToken', result.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS);
+
       return res.redirect(`${APP_CLIENT_URL}/welcome?status=success`)
     } catch {
       return res.redirect(`${APP_CLIENT_URL}/welcome?status=error`)
@@ -71,11 +79,21 @@ export class AuthController {
   }
 
   @Post('logout')
-  async logout(@Req() req: Request) {
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     // JwtAuthGuard đã attach user và decoded token vào req
-    const { jti, exp, sub } = (req as any).tokenPayload;
+    const { jti, exp } = (req as any).tokenPayload;
     const refreshToken = req.cookies?.refreshToken;
-    return this.authService.logout(jti, exp, refreshToken);
+    const result = await this.authService.logout(jti, exp, refreshToken);
+
+    res.clearCookie('accessToken', ACCESS_TOKEN_COOKIE_OPTIONS);
+    res.clearCookie('refreshToken', REFRESH_TOKEN_COOKIE_OPTIONS);
+
+    return result;
+  }
+
+  @Get('me')
+  async me(@Req() req: Request) {
+    return { user: req['user'] };
   }
 
   @Public()

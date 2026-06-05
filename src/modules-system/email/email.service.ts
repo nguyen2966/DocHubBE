@@ -198,8 +198,7 @@ export class EmailService {
     /**
      * Tạo link verify
      */
-    const verificationUrl =
-      `${APP_URL}/api/auth/verify-email?token=${rawToken}`;
+    const verificationUrl = `${APP_URL}/api/auth/verify-email?token=${rawToken}`;
 
     /**
      * Enqueue email

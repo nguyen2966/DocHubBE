@@ -53,9 +53,29 @@ export class AuthService {
     }
   }
 
-  async verifyEmail(rawToken: string): Promise<{ message: string }> {
-    await this.emailService.verifyEmailToken(rawToken)
-    return { message: 'Email verification succeed. You can login' }
+  async verifyEmail(rawToken: string, deviceInfo?: { userAgent: string; ipAddress: string } ): Promise<{accessToken: string
+    refreshToken: string
+    user: { id: string; email: string; fullName: string }}> {
+    const userId = await this.emailService.verifyEmailToken(rawToken);
+
+    const user = await this.userModel.findOne({
+      _id: userId.toString()
+    });
+
+    const { accessToken, refreshToken } = await this.tokenService.generateTokenPair(
+        userId.toString(),
+        deviceInfo,
+    );
+
+    return {
+      accessToken,
+      refreshToken,
+      user: {
+        id: user!._id.toString(),
+        email: user!.email,
+        fullName: user!.fullName,
+      },
+    }
   }
 
   async login(
