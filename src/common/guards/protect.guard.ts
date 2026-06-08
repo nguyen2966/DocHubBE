@@ -65,18 +65,11 @@ export class ProtectGuard implements CanActivate {
         throw new UnauthorizedException('User not found')
       }
 
-
-
       // 4. Attach vào request để các handler và service phía sau dùng
       //    - user: dùng cho business logic
       //    - tokenPayload: dùng riêng cho logout (cần jti và exp)
       req.user = user;
       req.tokenPayload = payload;
-
-      console.log('path:', req.path)
-      console.log('isPublic:', isPublic)
-      console.log('isOptionalAuth:', isOptionalAuth)
-      console.log('accessToken:', accessToken ? 'YES' : 'NO')
 
       return true;
     } catch (error: any) {

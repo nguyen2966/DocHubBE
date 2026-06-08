@@ -23,6 +23,8 @@ import { InviteMemberDto } from './dto/invite-member.dto';
 import { UpdateMemberRoleDto } from './dto/update-member-role.dto';
 
 import { InvitationAction } from 'src/common/constants/enum'
+import { WORKSPACE_ROLE_PERMISSIONS } from 'src/modules-system/permissions/roles/role.permissions'
+import { InviteEmailResult } from './types/types'
 
 
 import {
@@ -140,24 +142,117 @@ export class WorkspaceService implements OnModuleInit {
     return workspace
   }
 
-  async findAllByUser(userId: string): Promise<Workspace[]> {
-    // getMember dùng pre-hook nên memberships chỉ trả active records
+  async findAllByUser(
+    userId: string,
+    options: {
+      cursor?: string
+      limit?: number
+    } = {},
+  ) {
+    const limit = Math.min(options.limit ?? 20, 50)
+
+    const query: any = {
+      userId: this.toId(userId),
+      isDeleted: false
+    }
+
+    if (options.cursor) {
+      query._id = { $lt: this.toId(options.cursor) }
+    }
+
     const memberships = await this.memberModel
-      .find({ userId: this.toId(userId) })
-      .select('workspaceId')
+      .find(query)
+      .sort({ _id: -1 })
+      .limit(limit + 1)
+      .populate('workspaceId')
+      .populate('roleId', 'name scope')
       .lean()
 
-    const workspaceIds = memberships.map((m) => m.workspaceId)
-    // Workspace pre-hook cũng tự filter isDeleted
-    return this.workspaceModel.find({ _id: { $in: workspaceIds } }).lean()
+    const hasMore = memberships.length > limit
+    const pageItems = hasMore ? memberships.slice(0, limit) : memberships
+
+    const workspaceIds = pageItems
+      .map((m) => (m.workspaceId as any)?._id)
+      .filter(Boolean)
+
+    const memberCounts = await this.memberModel.aggregate([
+      {
+        $match: {
+          workspaceId: { $in: workspaceIds },
+          isDeleted: false,
+        },
+      },
+      {
+        $group: {
+          _id: '$workspaceId',
+          count: { $sum: 1 },
+        },
+      },
+    ])
+
+    const memberCountMap = new Map<string, number>(
+      memberCounts.map((item) => [
+        item._id.toString(),
+        item.count,
+      ]),
+    )
+
+    return {
+      items: pageItems.map((m) => {
+        const workspace = m.workspaceId as any
+        const role = m.roleId as any
+        const workspaceId = workspace._id.toString()
+
+        return {
+          ...workspace,
+          memberCount: memberCountMap.get(workspaceId) ?? 0,
+          currentUserAccess: {
+            role: role.name,
+            scope: role.scope,
+            permissions: WORKSPACE_ROLE_PERMISSIONS[role.name] ?? [],
+          },
+        }
+      }),
+      nextCursor:
+        hasMore && pageItems.length > 0
+          ? pageItems[pageItems.length - 1]._id.toString()
+          : null,
+      hasMore,
+    }
   }
 
-  async findOne(workspaceId: string, userId: string): Promise<Workspace> {
-    await this.assertMember(workspaceId, userId)
+  async findOne(workspaceId: string, userId: string) {
+    const membership = await this.memberModel
+      .findOne({
+        workspaceId: this.toId(workspaceId),
+        userId: this.toId(userId),
+        isDeleted: false,
+      })
+      .populate('roleId', 'name scope')
+      .lean()
 
-    const workspace = await this.workspaceModel.findById(workspaceId).lean()
-    if (!workspace) throw new NotFoundException('Workspace không tồn tại')
-    return workspace
+    if (!membership) {
+      throw new ForbiddenException('Bạn không thuộc workspace này hoặc workspace đã bị xóa');
+    }
+
+    const workspace = await this.workspaceModel
+      .findById(workspaceId)
+      .lean()
+
+    if (!workspace) {
+      throw new NotFoundException('Workspace không tồn tại');
+    }
+
+    const role = membership.roleId as any
+
+    return {
+      ...workspace,
+      currentUserAccess: {
+        role: role.name,
+        scope: role.scope,
+        permissions: WORKSPACE_ROLE_PERMISSIONS[role.name] ?? [],
+      },
+    }
   }
 
   async update(
@@ -319,65 +414,108 @@ export class WorkspaceService implements OnModuleInit {
   async inviteMember(
     workspaceId: string,
     actorId: string,
-    dto: InviteMemberDto,
-  ) {
+    dto: InviteMemberDto,           // dto.emails: string[], dto.role: string
+  ): Promise<InviteEmailResult[]> {
     await this.assertAdmin(workspaceId, actorId)
-
-    const email = dto.email.toLowerCase()
-
-    // Kiểm tra đã là active member chưa
-    const existingUser = await this.userModel.findOne({ email }).lean()
-    if (existingUser) {
-      const alreadyMember = await this.getMember(
-        workspaceId,
-        existingUser._id.toString(),
-      )
-      if (alreadyMember) {
-        throw new ConflictException('Người dùng đã là thành viên của workspace')
-      }
-    }
-
-    // Expire invitation cũ còn pending của email này
-    await this.invitationModel.updateMany(
-      { workspaceId: this.toId(workspaceId), invitedEmail: email, status: 'pending' },
-      { $set: { status: 'expired' } },
-    )
-
-    const token = crypto.randomBytes(32).toString('hex')
-    const ttlDays = parseInt(INVITATION_TTL_DAYS as string, 10)
-    const expiresAt = new Date(Date.now() + ttlDays * 86_400 * 1000)
-
-    const invitation = await this.invitationModel.create({
-      workspaceId: this.toId(workspaceId),
-      invitedEmail: email,
-      invitedUserId: existingUser?._id ?? null,
-      invitedBy: this.toId(actorId),
-      role: dto.role,
-      token,
-      status: 'pending',
-      expiresAt,
-    })
 
     const [workspace, inviter] = await Promise.all([
       this.workspaceModel.findById(workspaceId).lean(),
       this.userModel.findById(actorId).lean(),
     ])
 
-    // Cả 2 đều dùng cùng 1 backend GET endpoint — browser click trực tiếp.
-    // Backend tự phân nhánh registered / unregistered / đã login hay chưa.
-    const isRegistered = !!existingUser
-    const invitationUrl = `${APP_URL}/api/workspaces/invitations/${token}/accept`
+    // Batch lookup: 1 query cho toàn bộ emails thay vì N queries
+    const existingUsers = await this.userModel
+      .find({ email: { $in: dto.emails } })
+      .select('_id email')
+      .lean()
 
-    await this.emailService.sendWorkspaceInvitationEmail({
-      to: email,
-      workspaceName: workspace?.name ?? 'Workspace',
-      inviterName: inviter?.fullName ?? inviter?.email,
-      role: dto.role,
-      invitationUrl,
-      isRegistered,
-    })
+    const userByEmail = new Map(
+      existingUsers.map((u) => [u.email, u]),
+    )
 
-    return invitation
+    // Batch lookup memberships cho registered users
+    const registeredUserIds = existingUsers.map((u) => u._id)
+    const existingMembers = registeredUserIds.length
+      ? await this.memberModel
+        .find({
+          workspaceId: this.toId(workspaceId),
+          userId: { $in: registeredUserIds },
+          isDeleted: false,
+        })
+        .select('userId')
+        .lean()
+      : []
+
+    const alreadyMemberUserIds = new Set(
+      existingMembers.map((m) => m.userId.toString()),
+    )
+
+    // Xử lý từng email song song — mỗi email độc lập, lỗi 1 cái không ảnh hưởng cái khác
+    const results = await Promise.all(
+      dto.emails.map(async (email): Promise<InviteEmailResult> => {
+        try {
+          const existingUser = userByEmail.get(email)
+          const isRegistered = !!existingUser
+
+          // Guard: đã là member
+          if (existingUser && alreadyMemberUserIds.has(existingUser._id.toString())) {
+            return { email, status: 'already_member' }
+          }
+
+          // Expire pending invitations cũ của email này trong workspace
+          await this.invitationModel.updateMany(
+            {
+              workspaceId: this.toId(workspaceId),
+              invitedEmail: email,
+              status: 'pending',
+            },
+            { $set: { status: 'expired' } },
+          )
+
+          const token = crypto.randomBytes(32).toString('hex')
+          const ttlDays = parseInt(INVITATION_TTL_DAYS as string, 10)
+          const expiresAt = new Date(Date.now() + ttlDays * 86_400 * 1000)
+
+          const invitation = await this.invitationModel.create({
+            workspaceId: this.toId(workspaceId),
+            invitedEmail: email,
+            invitedUserId: existingUser?._id ?? null,
+            invitedBy: this.toId(actorId),
+            role: dto.role,
+            token,
+            status: 'pending',
+            expiresAt,
+          })
+
+          const invitationUrl = `${APP_URL}/api/workspaces/invitations/${token}/accept`
+
+          // Fire-and-forget email — không block kết quả trả về
+          this.emailService
+            .sendWorkspaceInvitationEmail({
+              to: email,
+              workspaceName: workspace?.name ?? 'Workspace',
+              inviterName: inviter?.fullName ?? inviter?.email,
+              role: dto.role,
+              invitationUrl,
+              isRegistered,
+            })
+            .catch((err) =>
+              console.error(`[inviteMember] email send failed for ${email}:`, err),
+            )
+
+          return {
+            email,
+            status: 'invited',
+            invitationId: (invitation._id as any).toString(),
+          }
+        } catch (err) {
+          console.error(`[inviteMember] unexpected error for ${email}:`, err)
+          return { email, status: 'error' }
+        }
+      }),
+    )
+
+    return results;
   }
 
   /**
