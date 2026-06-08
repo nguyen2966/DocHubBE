@@ -27,6 +27,27 @@ export class AuthController {
     return this.authService.register(dto)
   }
 
+  // @Public()
+  // @Get('verify-email')
+  // async verifyEmail(
+  //   @Query('token') token: string,
+  //   @Req() req: Request,
+  //   @Res() res: Response,
+  // ) {
+  //   try {
+  //     const deviceInfo = {
+  //       userAgent: req.headers['user-agent'] ?? '',
+  //       ipAddress: req.ip ?? '',
+  //     }
+  //     const result = await this.authService.verifyEmail(token, deviceInfo);
+  //     res.cookie('accessToken', result.accessToken, ACCESS_TOKEN_COOKIE_OPTIONS);
+  //     res.cookie('refreshToken', result.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS);
+
+  //     return res.redirect(`${APP_CLIENT_URL}/welcome?status=success`)
+  //   } catch {
+  //     return res.redirect(`${APP_CLIENT_URL}/welcome?status=error`)
+  //   }
+  // }
   @Public()
   @Get('verify-email')
   async verifyEmail(
@@ -40,12 +61,19 @@ export class AuthController {
         ipAddress: req.ip ?? '',
       }
       const result = await this.authService.verifyEmail(token, deviceInfo);
+ 
       res.cookie('accessToken', result.accessToken, ACCESS_TOKEN_COOKIE_OPTIONS);
       res.cookie('refreshToken', result.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS);
-
-      return res.redirect(`${APP_CLIENT_URL}/welcome?status=success`)
+ 
+      // Nếu user được auto-join vào workspace, redirect thẳng vào workspace đó
+      // Nếu không ,redirect về trang welcome như cũ
+      const redirectUrl = result.claimedWorkspaceId
+        ? `${APP_CLIENT_URL}/workspaces/${result.claimedWorkspaceId}`
+        : `${APP_CLIENT_URL}/welcome?status=success`;
+ 
+      return res.redirect(redirectUrl);
     } catch {
-      return res.redirect(`${APP_CLIENT_URL}/welcome?status=error`)
+      return res.redirect(`${APP_CLIENT_URL}/welcome?status=error`);
     }
   }
 

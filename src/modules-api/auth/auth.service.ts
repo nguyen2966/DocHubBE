@@ -12,6 +12,7 @@ import { EmailService } from '../../modules-system/email/email.service'
 import { User } from '../../modules-system/mongodb/schemas/users'
 import { RegisterDto } from './dto/register.dto'
 import { LoginDto } from './dto/login.dto'
+import { WorkspaceService } from '../workspace/workspace.service'
 
 @Injectable()
 export class AuthService {
@@ -20,6 +21,7 @@ export class AuthService {
     private readonly userModel: Model<User>,
     private readonly tokenService: TokenService,
     private readonly emailService: EmailService,
+    private readonly workspaceService: WorkspaceService
   ) { }
 
   async register(dto: RegisterDto): Promise<{ message: string }> {
@@ -53,28 +55,42 @@ export class AuthService {
     }
   }
 
-  async verifyEmail(rawToken: string, deviceInfo?: { userAgent: string; ipAddress: string } ): Promise<{accessToken: string
+  async verifyEmail(
+    rawToken: string,
+    deviceInfo?: { userAgent: string; ipAddress: string },
+  ): Promise<{
+    accessToken: string
     refreshToken: string
-    user: { id: string; email: string; fullName: string }}> {
-    const userId = await this.emailService.verifyEmailToken(rawToken);
+    user: { id: string; email: string; fullName: string }
+    /** workspaceId đầu tiên được claim, dùng để redirect FE */
+    claimedWorkspaceId: string | null
+  }> {
+    // verifyEmailToken đã: check token hợp lệ, set isEmailVerified = true, revoke token
+    const userId = await this.emailService.verifyEmailToken(rawToken)
 
-    const user = await this.userModel.findOne({
-      _id: userId.toString()
-    });
+    const user = await this.userModel.findById(userId)
+    if (!user) throw new Error('User not found after email verification')
+
+    // Claim tất cả pending invitations cho email này
+    const joinedWorkspaceIds = await this.workspaceService.claimPendingInvitations(
+      userId,
+      user.email,
+    )
 
     const { accessToken, refreshToken } = await this.tokenService.generateTokenPair(
-        userId.toString(),
-        deviceInfo,
-    );
+      userId,
+      deviceInfo,
+    )
 
     return {
       accessToken,
       refreshToken,
       user: {
-        id: user!._id.toString(),
-        email: user!.email,
-        fullName: user!.fullName,
+        id: user._id.toString(),
+        email: user.email,
+        fullName: user.fullName,
       },
+      claimedWorkspaceId: joinedWorkspaceIds[0] ?? null,
     }
   }
 
