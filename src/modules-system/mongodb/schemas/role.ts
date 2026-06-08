@@ -6,7 +6,7 @@ export class Role extends Document {
   @Prop({ required: true})
   name: string
   // "owner" | "editor" | "commenter" | "viewer"
-  // "workspace_admin" | "workspace_member"
+  // "admin" | "member"
 
   @Prop({ required: true })
   scope: string

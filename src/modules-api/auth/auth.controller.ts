@@ -12,12 +12,14 @@ import { AuthService } from './auth.service'
 import { RegisterDto } from './dto/register.dto'
 import { LoginDto } from './dto/login.dto'
 import { Public } from 'src/common/decorators/public.decorator'
+import { ResendVerificationDto } from './dto/resend-verification.dto'
 import { ACCESS_TOKEN_COOKIE_OPTIONS, REFRESH_TOKEN_COOKIE_OPTIONS } from 'src/common/constants/cookie.constants'
+import { APP_CLIENT_URL } from 'src/common/constants/app.constants'
 
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(private readonly authService: AuthService) { }
 
   @Post('register')
   @Public()
@@ -25,15 +27,59 @@ export class AuthController {
     return this.authService.register(dto)
   }
 
-  @Get('verify-email')
+  // @Public()
+  // @Get('verify-email')
+  // async verifyEmail(
+  //   @Query('token') token: string,
+  //   @Req() req: Request,
+  //   @Res() res: Response,
+  // ) {
+  //   try {
+  //     const deviceInfo = {
+  //       userAgent: req.headers['user-agent'] ?? '',
+  //       ipAddress: req.ip ?? '',
+  //     }
+  //     const result = await this.authService.verifyEmail(token, deviceInfo);
+  //     res.cookie('accessToken', result.accessToken, ACCESS_TOKEN_COOKIE_OPTIONS);
+  //     res.cookie('refreshToken', result.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS);
+
+  //     return res.redirect(`${APP_CLIENT_URL}/welcome?status=success`)
+  //   } catch {
+  //     return res.redirect(`${APP_CLIENT_URL}/welcome?status=error`)
+  //   }
+  // }
   @Public()
-  async verifyEmail(@Query('token') token: string) {
-    return this.authService.verifyEmail(token)
+  @Get('verify-email')
+  async verifyEmail(
+    @Query('token') token: string,
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    try {
+      const deviceInfo = {
+        userAgent: req.headers['user-agent'] ?? '',
+        ipAddress: req.ip ?? '',
+      }
+      const result = await this.authService.verifyEmail(token, deviceInfo);
+ 
+      res.cookie('accessToken', result.accessToken, ACCESS_TOKEN_COOKIE_OPTIONS);
+      res.cookie('refreshToken', result.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS);
+ 
+      // Nếu user được auto-join vào workspace, redirect thẳng vào workspace đó
+      // Nếu không ,redirect về trang welcome như cũ
+      const redirectUrl = result.claimedWorkspaceId
+        ? `${APP_CLIENT_URL}/workspaces/${result.claimedWorkspaceId}`
+        : `${APP_CLIENT_URL}/welcome?status=success`;
+ 
+      return res.redirect(redirectUrl);
+    } catch {
+      return res.redirect(`${APP_CLIENT_URL}/welcome?status=error`);
+    }
   }
 
   @Post('login')
   @Public()
-  async login(@Body() dto: LoginDto, @Req() req: Request, @Res({ passthrough:true }) res: Response) {
+  async login(@Body() dto: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const deviceInfo = {
       userAgent: req.headers['user-agent'] ?? '',
       ipAddress: req.ip ?? '',
@@ -47,7 +93,7 @@ export class AuthController {
 
   @Post('refresh-token')
   @Public()
-  async refreshToken( @Req() req: Request, @Res({ passthrough:true }) res: Response) {
+  async refreshToken(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const deviceInfo = {
       userAgent: req.headers['user-agent'] ?? '',
       ipAddress: req.ip ?? '',
@@ -61,10 +107,26 @@ export class AuthController {
   }
 
   @Post('logout')
-  async logout( @Req() req: Request) {
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     // JwtAuthGuard đã attach user và decoded token vào req
-    const { jti, exp, sub } = (req as any).tokenPayload;
+    const { jti, exp } = (req as any).tokenPayload;
     const refreshToken = req.cookies?.refreshToken;
-    return this.authService.logout(jti, exp, refreshToken);
+    const result = await this.authService.logout(jti, exp, refreshToken);
+
+    res.clearCookie('accessToken', ACCESS_TOKEN_COOKIE_OPTIONS);
+    res.clearCookie('refreshToken', REFRESH_TOKEN_COOKIE_OPTIONS);
+
+    return result;
+  }
+
+  @Get('me')
+  async me(@Req() req: Request) {
+    return { user: req['user'] };
+  }
+
+  @Public()
+  @Post('resend-verification')
+  async resendVerification(@Body() dto: ResendVerificationDto) {
+    return this.authService.resendVerificationEmail(dto.email)
   }
 }

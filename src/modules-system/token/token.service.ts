@@ -162,6 +162,6 @@ export class TokenService {
   }
 
   verifyAccessToken(token: string): TokenPayload {
-    return this.jwtService.verify<TokenPayload>(token)
+    return this.jwtService.verify<TokenPayload>(token);
   }
 }

@@ -1,92 +1,3 @@
-// import { Injectable, BadRequestException } from '@nestjs/common'
-// import { InjectQueue } from '@nestjs/bullmq'
-// import { Queue } from 'bullmq'
-// import { InjectModel } from '@nestjs/mongoose'
-// import { Model, Types } from 'mongoose'
-// import * as crypto from 'crypto'
-// import {
-//   EMAIL_QUEUE,
-//   EmailJobName,
-//   SendVerificationEmailJob,
-// } from './email.job'
-// import { EmailVerificationToken }
-//   from '../mongodb/schemas/email-verification-token'
-// import { User } from '../mongodb/schemas/users'
-// import { APP_URL, EMAIL_VERIFY_TTL_MINUTES } from 'src/common/constants/app.constants'
-
-// @Injectable()
-// export class EmailService {
-//   constructor(
-//     @InjectQueue(EMAIL_QUEUE)
-//     private readonly emailQueue: Queue,
-//     @InjectModel(EmailVerificationToken.name)
-//     private readonly verificationTokenModel: Model<EmailVerificationToken>,
-//     @InjectModel(User.name)
-//     private readonly userModel: Model<User>
-//   ) {}
-
-//   private hashToken(raw: string): string {
-//     return crypto.createHash('sha256').update(raw).digest('hex')
-//   }
-
-//   async sendVerificationEmail(userId: string, email: string): Promise<void> {
-//     // Invalidate tất cả token cũ chưa dùng của user này
-//     await this.verificationTokenModel.updateMany(
-//       { userId: new Types.ObjectId(userId), usedAt: null },
-//       { usedAt: new Date() },
-//     )
-
-//     const rawToken = crypto.randomBytes(32).toString('hex')
-//     const tokenHash = this.hashToken(rawToken)
-//     const ttlMinutes = parseInt(EMAIL_VERIFY_TTL_MINUTES as string);
-//     const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000)
-
-//     await this.verificationTokenModel.create({
-//       userId: new Types.ObjectId(userId),
-//       tokenHash,
-//       expiresAt,
-//       usedAt: null,
-//     })
-
-//     const verificationUrl = `${APP_URL}/api/auth/verify-email?token=${rawToken}`
-
-//     // Enqueue job — không block response
-//     await this.emailQueue.add(
-//       EmailJobName.SEND_VERIFICATION,
-//       { to: email, verificationUrl } satisfies SendVerificationEmailJob,
-//       {
-//         attempts: 3,
-//         backoff: { type: 'exponential', delay: 5000 },
-//         removeOnComplete: true,
-//         removeOnFail: false,   // giữ lại job thất bại để debug
-//       },
-//     )
-//   }
-
-//   async verifyEmailToken(rawToken: string): Promise<string> {
-//     const hash = this.hashToken(rawToken)
-//     const record = await this.verificationTokenModel.findOne({ tokenHash: hash })
-
-//     if (!record) {
-//       throw new BadRequestException('Invalid verification token')
-//     }
-//     if (record.usedAt !== null) {
-//       throw new BadRequestException('Verification token already used')
-//     }
-//     if (record.expiresAt < new Date()) {
-//       throw new BadRequestException('Verification token expired')
-//     }
-
-//     // Đánh dấu đã dùng và verify user trong một transaction
-//     await record.updateOne({ usedAt: new Date() })
-//     await this.userModel.findByIdAndUpdate(record.userId, {
-//       isEmailVerified: true,
-//     })
-
-//     return record.userId.toString()
-//   }
-// }
-
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -98,6 +9,7 @@ import {
   EMAIL_QUEUE,
   EmailJobName,
   SendVerificationEmailJob,
+  SendWorkspaceInvitationEmailJob
 } from './email.job';
 
 import { User } from '../mongodb/schemas/users';
@@ -123,7 +35,7 @@ export class EmailService {
     private readonly userModel: Model<User>,
 
     private readonly redisService: RedisService,
-  ) {}
+  ) { }
 
   private hashToken(raw: string): string {
     return crypto
@@ -198,8 +110,7 @@ export class EmailService {
     /**
      * Tạo link verify
      */
-    const verificationUrl =
-      `${APP_URL}/api/auth/verify-email?token=${rawToken}`;
+    const verificationUrl = `${APP_URL}/api/auth/verify-email?token=${rawToken}`;
 
     /**
      * Enqueue email
@@ -314,5 +225,21 @@ export class EmailService {
       ),
       this.redisService.del(userKey),
     ]);
+  }
+
+  async sendWorkspaceInvitationEmail(data: SendWorkspaceInvitationEmailJob): Promise<void> {
+    await this.emailQueue.add(
+      EmailJobName.SEND_WORKSPACE_INVITATION,
+      data,
+      {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 5000,
+        },
+        removeOnComplete: true,
+        removeOnFail: false,
+      },
+    )
   }
 }
