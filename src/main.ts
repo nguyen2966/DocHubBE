@@ -9,7 +9,9 @@ async function bootstrap() {
   app.setGlobalPrefix('api');
   app.use(cookieParser());
   app.useGlobalPipes(new ValidationPipe({
-    transform: true
+    transform: true,
+    whitelist: true,
+    transformOptions: { enableImplicitConversion: true },
   }));
 
   app.enableCors({
@@ -26,7 +28,7 @@ async function bootstrap() {
   const documentFactory = () => SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api/docs', app, documentFactory);
 
-  
+
   await app.listen(process.env.PORT ?? 3000);
 }
 bootstrap();

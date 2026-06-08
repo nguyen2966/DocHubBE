@@ -11,6 +11,8 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
+  UseInterceptors,
+  Query,
 } from '@nestjs/common';
 import { type Request, type Response } from 'express'
 import { WorkspaceService } from './workspace.service'
@@ -22,6 +24,10 @@ import { Public } from 'src/common/decorators/public.decorator';
 import { APP_CLIENT_URL } from 'src/common/constants/app.constants';
 import { InvitationAction } from 'src/common/constants/enum';
 import { OptionalAuth } from 'src/common/decorators/optional-auth.decorator';
+import { RequireWorkspacePermission } from 'src/modules-system/permissions/decorators/require-workspace-permission.decorator';
+import { WorkspacePermissionGuard } from 'src/modules-system/permissions/guards/workspace-permission.guard';
+import { PaginationResponseInterceptor } from 'src/common/interceptors/paginated.interceptor';
+import { CursorPaginationDto } from './dto/workspace-list.dto';
 
 @Controller('workspaces')
 export class WorkspaceController {
@@ -73,7 +79,7 @@ export class WorkspaceController {
 
       case InvitationAction.SIGN_IN:
         return res.redirect(
-         `${APP_CLIENT_URL}/invitations/${result.token}/accept`,
+          `${APP_CLIENT_URL}/invitations/${result.token}/accept`,
         );
 
       case InvitationAction.ACCEPTED:
@@ -113,16 +119,27 @@ export class WorkspaceController {
   }
 
   @Get()
-  findAll(@Req() req: Request) {
-    return this.workspaceService.findAllByUser(req.user!._id.toString())
+  @UseInterceptors(PaginationResponseInterceptor)
+  findAll(
+    @Req() req: Request,
+    @Query() query: CursorPaginationDto,
+  ) {
+    return this.workspaceService.findAllByUser(
+      req.user!._id.toString(),
+      query,
+    )
   }
 
   @Get(':workspaceId')
+  @UseGuards(WorkspacePermissionGuard)
+  @RequireWorkspacePermission('workspace:view')
   findOne(@Req() req: Request, @Param('workspaceId') workspaceId: string) {
     return this.workspaceService.findOne(workspaceId, req.user!._id.toString())
   }
 
   @Patch(':workspaceId')
+  @UseGuards(WorkspacePermissionGuard)
+  @RequireWorkspacePermission('workspace:manage_settings')
   update(
     @Req() req: Request,
     @Param('workspaceId') workspaceId: string,
@@ -132,6 +149,8 @@ export class WorkspaceController {
   }
 
   @Delete(':workspaceId')
+  @UseGuards(WorkspacePermissionGuard)
+  @RequireWorkspacePermission('workspace:delete')
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Req() req: Request, @Param('workspaceId') workspaceId: string) {
     return this.workspaceService.remove(workspaceId, req.user!._id.toString())
@@ -140,11 +159,15 @@ export class WorkspaceController {
   // ─── Members ──────────────────────────────────────────────
 
   @Get(':workspaceId/members')
+  @UseGuards(WorkspacePermissionGuard)
+  @RequireWorkspacePermission('workspace:view')
   getMembers(@Req() req: Request, @Param('workspaceId') workspaceId: string) {
     return this.workspaceService.getMembers(workspaceId, req.user!._id.toString())
   }
 
   @Patch(':workspaceId/members/:userId/role')
+  @UseGuards(WorkspacePermissionGuard)
+  @RequireWorkspacePermission('workspace:change_member_role')
   updateMemberRole(
     @Req() req: Request,
     @Param('workspaceId') workspaceId: string,
@@ -160,6 +183,8 @@ export class WorkspaceController {
   }
 
   @Delete(':workspaceId/members/:userId')
+  @UseGuards(WorkspacePermissionGuard)
+  @RequireWorkspacePermission('workspace:remove_member')
   @HttpCode(HttpStatus.NO_CONTENT)
   removeMember(
     @Req() req: Request,
@@ -182,10 +207,13 @@ export class WorkspaceController {
   // ─── Invitations ──────────────────────────────────────────
 
   @Post(':workspaceId/invitations')
+  @UseGuards(WorkspacePermissionGuard)
+  @RequireWorkspacePermission('workspace:invite_member')
+  @HttpCode(HttpStatus.CREATED)
   inviteMember(
     @Req() req: Request,
     @Param('workspaceId') workspaceId: string,
-    @Body() dto: InviteMemberDto,
+    @Body() dto: InviteMemberDto,           // dto.emails: string[]
   ) {
     return this.workspaceService.inviteMember(
       workspaceId,
@@ -195,11 +223,15 @@ export class WorkspaceController {
   }
 
   @Get(':workspaceId/invitations')
+  @UseGuards(WorkspacePermissionGuard)
+  @RequireWorkspacePermission('workspace:invite_member')
   getInvitations(@Req() req: Request, @Param('workspaceId') workspaceId: string) {
     return this.workspaceService.getInvitations(workspaceId, req.user!._id.toString())
   }
 
   @Delete(':workspaceId/invitations/:invitationId')
+  @UseGuards(WorkspacePermissionGuard)
+  @RequireWorkspacePermission('workspace:invite_member')
   @HttpCode(HttpStatus.NO_CONTENT)
   cancelInvitation(
     @Req() req: Request,
