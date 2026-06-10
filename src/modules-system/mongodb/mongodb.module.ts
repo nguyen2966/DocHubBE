@@ -9,6 +9,10 @@ import { Role, RoleSchema } from './schemas/role';
 import { WorkspaceInvitation, WorkspaceInvitationSchema } from './schemas/workspace-ivitation';
 import { Workspace, WorkspaceSchema } from './schemas/workspace';
 import { WorkspaceMember, WorkspaceMemberSchema } from './schemas/workspace-member';
+import { Annotation, AnnotationSchema } from './schemas/annotation';
+import { Document, DocumentSchema } from './schemas/document';
+import { DocumentPermission, DocumentPermissionSchema } from './schemas/document-permission';
+import { Comment, CommentSchema } from './schemas/comment';
 
 @Global()
 @Module({
@@ -21,6 +25,10 @@ import { WorkspaceMember, WorkspaceMemberSchema } from './schemas/workspace-memb
       { name: Workspace.name, schema: WorkspaceSchema },
       { name: WorkspaceMember.name, schema: WorkspaceMemberSchema },
       { name: WorkspaceInvitation.name, schema: WorkspaceInvitationSchema },
+      { name: Annotation.name, schema: AnnotationSchema },
+      { name: Document.name, schema: DocumentSchema},
+      { name: DocumentPermission.name, schema: DocumentPermissionSchema },
+      { name: Comment.name, schema: CommentSchema }
     ])
   ],
   exports: [MongooseModule],
