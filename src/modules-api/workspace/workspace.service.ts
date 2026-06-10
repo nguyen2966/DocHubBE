@@ -81,6 +81,7 @@ export class WorkspaceService implements OnModuleInit {
       .findOne({
         workspaceId: this.toId(workspaceId),
         userId: this.toId(userId),
+        isDeleted: false
       })
       .lean()
   }
@@ -153,7 +154,7 @@ export class WorkspaceService implements OnModuleInit {
 
     const query: any = {
       userId: this.toId(userId),
-      isDeleted: false
+     // isDeleted: false
     }
 
     if (options.cursor) {
@@ -226,7 +227,7 @@ export class WorkspaceService implements OnModuleInit {
       .findOne({
         workspaceId: this.toId(workspaceId),
         userId: this.toId(userId),
-        isDeleted: false,
+       // isDeleted: false,
       })
       .populate('roleId', 'name scope')
       .lean()
@@ -309,11 +310,12 @@ export class WorkspaceService implements OnModuleInit {
     await this.assertMember(workspaceId, userId)
 
     return this.memberModel
-      .find({ workspaceId: this.toId(workspaceId) })
+      .find({ workspaceId: this.toId(workspaceId), isDeleted: false })
       .populate('userId', 'fullName email')
       .populate('roleId', 'name')
       .lean()
   }
+
 
   async updateMemberRole(
     workspaceId: string,
@@ -321,39 +323,77 @@ export class WorkspaceService implements OnModuleInit {
     actorId: string,
     dto: UpdateMemberRoleDto,
   ) {
-    await this.assertAdmin(workspaceId, actorId)
+    await this.assertAdmin(workspaceId, actorId);
 
     if (targetUserId === actorId) {
-      throw new BadRequestException('Không thể đổi role của chính mình')
+      throw new BadRequestException(
+        'You can not change your own role',
+      );
     }
 
-    const newRoleId = this.toId(dto.roleId)
-    const isDowngradingToNonAdmin = !newRoleId.equals(this.adminRoleId)
+    const role = await this.roleModel.findOne({
+      name: dto.role,
+    });
 
-    // Nếu đang hạ role từ admin → kiểm tra còn ít nhất 1 admin khác
+    if (!role) {
+      throw new NotFoundException(
+        `Role '${dto.role}' does not exist`,
+      );
+    }
+
+    const newRoleId = role._id as Types.ObjectId;
+
+    const isDowngradingToNonAdmin =
+      role.name !== 'admin';
+
+    // admin -> member
     if (isDowngradingToNonAdmin) {
-      const target = await this.getMember(workspaceId, targetUserId)
-      if (!target) throw new NotFoundException('Thành viên không tồn tại')
+      const target = await this.getMember(
+        workspaceId,
+        targetUserId,
+      );
+
+      if (!target) {
+        throw new NotFoundException(
+          'Member not found',
+        );
+      }
 
       if (target.roleId.equals(this.adminRoleId)) {
-        const adminCount = await this.getActiveAdminCount(workspaceId)
+        const adminCount =
+          await this.getActiveAdminCount(workspaceId);
+
         if (adminCount <= 1) {
-          throw new BadRequestException('Workspace phải có ít nhất một admin')
+          throw new BadRequestException(
+            'Workspace must have at least 1 admin',
+          );
         }
       }
     }
 
     const updated = await this.memberModel
       .findOneAndUpdate(
-        { workspaceId: this.toId(workspaceId), userId: this.toId(targetUserId) },
-        { roleId: newRoleId },
-        { new: true },
+        {
+          workspaceId: this.toId(workspaceId),
+          userId: this.toId(targetUserId),
+        },
+        {
+          roleId: newRoleId,
+        },
+        {
+          new: true,
+        },
       )
       .populate('roleId', 'name')
-      .lean()
+      .lean();
 
-    if (!updated) throw new NotFoundException('Thành viên không tồn tại')
-    return updated
+    if (!updated) {
+      throw new NotFoundException(
+        'Member not found',
+      );
+    }
+
+    return updated;
   }
 
   /**
@@ -368,24 +408,24 @@ export class WorkspaceService implements OnModuleInit {
 
     if (targetUserId === actorId) {
       throw new BadRequestException(
-        'Không thể tự xóa mình. Hãy dùng leave workspace.',
+        'You can not remove yourself from workspace',
       )
     }
 
     const target = await this.getMember(workspaceId, targetUserId)
-    if (!target) throw new NotFoundException('Thành viên không tồn tại')
+    if (!target) throw new NotFoundException('Member not found')
 
     if (target.roleId.equals(this.adminRoleId)) {
       const adminCount = await this.getActiveAdminCount(workspaceId)
       if (adminCount <= 1) {
-        throw new BadRequestException('Workspace phải có ít nhất một admin')
+        throw new BadRequestException('Workspace must have at least 1 admin');
       }
     }
 
-    await this.memberModel.findOneAndUpdate(
-      { workspaceId: this.toId(workspaceId), userId: this.toId(targetUserId) },
-      { $set: this.softDeleteUpdate(actorId) },
-    )
+    await this.memberModel.deleteOne({
+      workspaceId: this.toId(workspaceId),
+      userId: this.toId(targetUserId),
+    })
   }
 
   /**

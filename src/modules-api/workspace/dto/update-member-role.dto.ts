@@ -1,8 +1,12 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsMongoId } from 'class-validator'
+import { IsEnum } from 'class-validator';
+import { WorkspaceRole } from 'src/common/constants/enum';
 
 export class UpdateMemberRoleDto {
-  @ApiProperty({ description: 'MongoDB ObjectId of new role' })
-  @IsMongoId()
-  roleId!: string
+  @ApiProperty({
+    enum: WorkspaceRole,
+    example: WorkspaceRole.MEMBER,
+  })
+  @IsEnum(WorkspaceRole)
+  role!: WorkspaceRole;
 }
