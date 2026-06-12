@@ -16,12 +16,14 @@ import { ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { RenameDocumentDto } from './dto/rename-document.dto';
 import { type Request } from 'express';
 import { PermissionsService } from 'src/modules-system/permissions/permissions.service';
+import { UploadJobService } from './upload-job.service';
 
 @Controller('workspaces/:workspaceId/documents')
 @UseGuards(WorkspacePermissionGuard)
 export class DocumentController {
   constructor(private readonly documentService: DocumentService,
-    private readonly permissionsService: PermissionsService
+    private readonly permissionsService: PermissionsService,
+    private readonly uploadJobService: UploadJobService
   ) { }
 
   // 1. Markdown Flow
@@ -50,24 +52,73 @@ export class DocumentController {
     limits: { fileSize: 20 * 1024 * 1024 }, // Max 20MB
     fileFilter: (req, file, cb) => {
       if (file.mimetype !== 'application/pdf') {
-        return cb(new BadRequestException('Chỉ chấp nhận định dạng file PDF'), false);
+        return cb(new BadRequestException('Only accept PDF'), false);
       }
       cb(null, true);
     }
   }))
-  uploadPdf(
+  async uploadPdf(
     @Param('workspaceId') workspaceId: string,
     @UploadedFile() file: Express.Multer.File,
     @Body() dto: UploadPdfDto, // Sử dụng DTO mới tạo
     @Req() req: any
   ) {
     if (!file) throw new BadRequestException('File is required');
+    if (!dto.jobId) throw new BadRequestException('jobId is required')
 
+    // Tạo job trước → trả jobId về frontend ngay
+    const jobId = dto.jobId;
     // Lấy title từ dto, nếu không có thì lấy tên gốc của file (bỏ đuôi .pdf)
     const title = dto.title || file.originalname.replace(/\.pdf$/i, '');
 
-    return this.documentService.uploadPdf(workspaceId, req.user._id.toString(), file, title);
+    return this.documentService.uploadPdf(workspaceId, req.user._id.toString(), file, title, jobId);
   }
+
+  @Post('upload-jobs')
+  @RequireWorkspacePermission('workspace:create_document')
+  async createUploadJob(
+    @Param('workspaceId') workspaceId: string,
+  ) {
+    const jobId = await this.uploadJobService.create(workspaceId);
+
+    return { jobId }
+  }
+
+  @Delete('upload/:jobId/cancel')
+  @RequireWorkspacePermission('workspace:create_document')
+  cancelUpload(
+    @Param('workspaceId') workspaceId: string,
+    @Param('jobId') jobId: string,
+    @Req() req: any,
+  ) {
+    return this.documentService.cancelUpload(
+      jobId,
+      workspaceId,
+      req.user._id.toString(),
+    )
+  }
+
+  @Patch(':documentId/content')
+  @UseGuards(DocumentPermissionGuard)
+  @RequireDocumentPermissions('document:edit')
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({ description: 'Edited PDF exported from Apryse' })
+  @UseInterceptors(FileInterceptor('file', {
+    fileFilter: (_req, file, cb) => {
+      if (file.mimetype !== 'application/pdf') {
+        return cb(new BadRequestException('Only PDF files are accepted'), false);
+      }
+      cb(null, true);
+    },
+  }))
+  editPdf(
+    @Param('documentId') documentId: string,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file) throw new BadRequestException('File is required');
+    return this.documentService.editPdf(documentId, file.buffer);
+  }
+
   // Lấy danh sách
   @Get()
   @RequireWorkspacePermission('workspace:view')

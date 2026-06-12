@@ -18,4 +18,11 @@ export class UploadPdfDto {
   @IsString()
   @MaxLength(255)
   title?: string;
+
+  @ApiPropertyOptional({ 
+    description: 'Optional title or file name will be used' 
+  })
+  @IsOptional()
+  @IsString()
+  jobId?: string;
 }

@@ -47,8 +47,8 @@ export class WorkspacePermissionGuard implements CanActivate {
       ),
     );
 
-    console.log("Guard passed:")
-    console.log(allowed);
+   // console.log("Guard passed:")
+    //console.log(allowed);
 
     if (!allowed.every(Boolean)) {
       throw new ForbiddenException(

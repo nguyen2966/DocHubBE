@@ -5,6 +5,10 @@ import { PermissionsModule } from 'src/modules-system/permissions/permissions.mo
 import { PermissionsService } from 'src/modules-system/permissions/permissions.service';
 import { BullModule } from '@nestjs/bullmq';
 import { DocumentProcessor } from './document.processor';
+import { StorageModule } from 'src/modules-system/storage/storage.module';
+import { UploadJobService } from './upload-job.service';
+import { WebsocketModule } from 'src/modules-system/websocket/websocket.module';
+import { ProgressGateway } from 'src/modules-system/websocket/progress.gateway';
 
 @Module({
   imports:[
@@ -12,10 +16,17 @@ import { DocumentProcessor } from './document.processor';
     BullModule.registerQueue({
       name: 'document-processing',
     }),
-    PermissionsModule
+    PermissionsModule,
+    StorageModule,
+    WebsocketModule
   ],
   controllers: [DocumentController],
-  providers: [DocumentService,PermissionsService, DocumentProcessor, PermissionsService ],
+  providers: [DocumentService,
+              PermissionsService, 
+              DocumentProcessor, 
+              PermissionsService, 
+              UploadJobService,
+             ],
   
 })
 export class DocumentModule {}

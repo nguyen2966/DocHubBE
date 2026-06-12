@@ -8,6 +8,11 @@ import { WorkspaceMember } from 'src/modules-system/mongodb/schemas/workspace-me
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { RenameDocumentDto } from './dto/rename-document.dto';
+import { StorageContract } from 'src/modules-system/storage/storage.contract';
+import { buildDocumentKey } from 'src/modules-system/storage/storage-key.util';
+import { UploadJobService } from './upload-job.service';
+import { UploadJob } from 'src/modules-system/mongodb/schemas/upload-job';
+
 
 
 @Injectable()
@@ -19,11 +24,23 @@ export class DocumentService {
     private documentPermissionModel: Model<any>,
     @InjectModel(WorkspaceMember.name)
     private readonly memberModel: Model<WorkspaceMember>,
-    @InjectQueue('document-processing') 
+    @InjectModel(UploadJob.name)
+    private readonly uploadJobModel: Model<UploadJob>,
+    @InjectQueue('document-processing')
     private readonly documentQueue: Queue, // Inject Queue
+    private readonly storage: StorageContract,
+    private readonly uploadJobService: UploadJobService
+
+
   ) { }
 
-  // Flow 1: Create Markdown
+  // ─── Flow 1: Create from Markdown Editor ──────────────────────────────────
+  private async isUploadCancelled(jobId: string) {
+    const job = await this.uploadJobModel.findOne({ jobId }).lean();
+    return job?.isCancelled === true || job?.status === 'CANCELLED';
+  }
+
+
   async createMarkdown(workspaceId: string, ownerId: string, dto: CreateDocumentDto) {
     const title = await this.resolveTitle(workspaceId, dto.title);
 
@@ -33,45 +50,227 @@ export class DocumentService {
       title,
       sourceType: 'md_editor',
       markdownContent: dto.markdownContent,
-      processingStatus: 'processed', // Markdown is instantly processed
+      processingStatus: 'processing',
     });
 
     await this.assignOwner(doc._id, ownerId);
+
+    // Enqueue markdown → PDF conversion
+    await this.documentQueue.add('convert-markdown', {
+      documentId: doc._id.toString(),
+      markdownContent: dto.markdownContent,
+      workspaceId,
+    });
+
     return doc;
   }
 
-  // Flow 2: Upload PDF
-  async uploadPdf(workspaceId: string, ownerId: string, file: Express.Multer.File, titleInput: string) {
-    const title = await this.resolveTitle(workspaceId, titleInput);
+  // ─── Flow 2: Upload PDF ────────────────────────────────────────────────────
 
-    // TODO: In a real environment, you upload 'file.buffer' to S3 here
-    // const s3Result = await this.s3Service.upload(file);
-    const mockFileUrl = 'https://mock-storage/file.pdf';
-    const mockStorageKey = 'uploads/file.pdf';
+  // async uploadPdf(
+  //   workspaceId: string,
+  //   ownerId: string,
+  //   file: Express.Multer.File,
+  //   titleInput: string,
+  //   jobId: string,
+  // ) {
+  //   await this.uploadJobService.update(jobId, { status: 'FILE_SAVED', progress: 33 });
+  //   const title = await this.resolveTitle(workspaceId, titleInput);
+
+  //   // Create the document record first so we have its _id for the storage key
+  //   const doc = await this.documentModel.create({
+  //     workspaceId,
+  //     ownerId,
+  //     title,
+  //     sourceType: 'file_upload',
+  //     fileSize: file.size,
+  //     processingStatus: 'processing',
+  //   });
+
+  //   const key = buildDocumentKey(workspaceId, doc._id.toString());
+  //   const { publicUrl } = await this.storage.upload(key, file.buffer, 'application/pdf');
+
+  //   // Storage xong -> progress = 66%
+  //   await this.uploadJobService.update(jobId, {
+  //     status: 'EXTRACTING',
+  //     progress: 66,
+  //     documentId: doc._id.toString(),
+  //   });
+
+  //   await this.documentModel.findByIdAndUpdate(doc._id, {
+  //     pdfStorageKey: key,
+  //     pdfFileUrl: publicUrl,
+  //   });
+
+  //   await this.assignOwner(doc._id, ownerId);
+
+  //   // Enqueue text extraction; worker reads from storage via key instead of
+  //   // re-passing the buffer (avoids large Redis payloads for big files)
+  //   await this.documentQueue.add('extract-pdf', {
+  //     documentId: doc._id.toString(),
+  //     storageKey: key,
+  //     jobId: jobId
+  //   });
+
+  //   return { ...doc.toObject(), pdfStorageKey: key, pdfFileUrl: publicUrl, jobId: jobId };
+  // }
+
+  async uploadPdf(
+    workspaceId: string,
+    ownerId: string,
+    file: Express.Multer.File,
+    titleInput: string,
+    jobId: string,
+  ) {
+    if (await this.isUploadCancelled(jobId)) {
+      return { jobId, cancelled: true }
+    }
+
+    await this.uploadJobService.update(jobId, {
+      status: 'FILE_SAVED',
+      progress: 33,
+    })
+
+    if (await this.isUploadCancelled(jobId)) {
+      return { jobId, cancelled: true }
+    }
+
+    const title = await this.resolveTitle(workspaceId, titleInput)
 
     const doc = await this.documentModel.create({
       workspaceId,
       ownerId,
       title,
       sourceType: 'file_upload',
-      pdfFileUrl: mockFileUrl,
-      pdfStorageKey: mockStorageKey,
       fileSize: file.size,
-      processingStatus: 'processing', // Marks as processing for UI loaders
-    });
+      processingStatus: 'processing',
+    })
 
-    await this.assignOwner(doc._id, ownerId);
+    await this.uploadJobService.update(jobId, {
+      documentId: doc._id.toString(),
+    })
 
-    // Push extraction task to background Queue
+    if (await this.isUploadCancelled(jobId)) {
+      await this.documentModel.findByIdAndDelete(doc._id)
+      return { jobId, cancelled: true }
+    }
+
+    const key = buildDocumentKey(workspaceId, doc._id.toString())
+
+    const { publicUrl } = await this.storage.upload(
+      key,
+      file.buffer,
+      'application/pdf',
+    )
+
+    if (await this.isUploadCancelled(jobId)) {
+      await this.storage.delete(key).catch(() => { })
+      await this.documentModel.findByIdAndDelete(doc._id)
+      await this.documentPermissionModel.deleteMany({ documentId: doc._id })
+      return { jobId, cancelled: true }
+    }
+
+    await this.uploadJobService.update(jobId, {
+      status: 'EXTRACTING',
+      progress: 66,
+      documentId: doc._id.toString(),
+    })
+
+    await this.documentModel.findByIdAndUpdate(doc._id, {
+      pdfStorageKey: key,
+      pdfFileUrl: publicUrl,
+    })
+
+    if (await this.isUploadCancelled(jobId)) {
+      await this.storage.delete(key).catch(() => { })
+      await this.documentModel.findByIdAndDelete(doc._id)
+      await this.documentPermissionModel.deleteMany({ documentId: doc._id })
+      return { jobId, cancelled: true }
+    }
+
+    await this.assignOwner(doc._id, ownerId)
+
+    if (await this.isUploadCancelled(jobId)) {
+      await this.storage.delete(key).catch(() => { })
+      await this.documentModel.findByIdAndDelete(doc._id)
+      await this.documentPermissionModel.deleteMany({ documentId: doc._id })
+      return { jobId, cancelled: true }
+    }
+
     await this.documentQueue.add('extract-pdf', {
       documentId: doc._id.toString(),
-      // ARCHITECTURE NOTE: For small files, passing base64 is okay. 
-      // For 20MB files, Redis memory will spike. Best practice is to pass the 'mockStorageKey' 
-      // and have the Worker download it directly from S3.
-      fileBuffer: file.buffer.toString('base64'),
+      storageKey: key,
+      jobId,
+    })
+
+    return {
+      ...doc.toObject(),
+      pdfStorageKey: key,
+      pdfFileUrl: publicUrl,
+      jobId,
+    }
+  }
+
+  async cancelUpload(jobId: string, workspaceId: string, userId: string) {
+    const job = await this.uploadJobModel.findOne({ jobId, workspaceId });
+    if (!job) throw new NotFoundException('Job not found');
+    console.log(job.status);
+    // Idempotent — không làm gì nếu đã xong/thất bại
+    if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(job.status)) return { cancelled: false };
+
+
+    // Đánh dấu cancel ngay — worker sẽ kiểm tra cờ này
+    await this.uploadJobService.update(jobId, {
+      status: 'CANCELLED',
+      isCancelled: true,
     });
 
-    return doc;
+    // Cleanup tùy theo đã đến phase nào
+    if (job.documentId) {
+      const doc = await this.documentModel.findById(job.documentId).lean();
+
+      if (doc?.pdfStorageKey) {
+        // Xóa file khỏi storage (fire-and-forget, không throw nếu lỗi)
+        await this.storage.delete(doc.pdfStorageKey).catch(() => { });
+      }
+
+      // Xóa document record và permission
+      await this.documentModel.findByIdAndDelete(job.documentId);
+      await this.documentPermissionModel.deleteMany({ documentId: job.documentId });
+    }
+
+    // Thử remove khỏi BullMQ queue nếu job chưa được worker nhận
+    // (nếu worker đã nhận thì remove fail silently, worker sẽ tự check isCancelled)
+    const bullJobs = await this.documentQueue.getJobs(['waiting', 'delayed']);
+    const bullJob = bullJobs.find(j => j.data.jobId === jobId);
+    await bullJob?.remove().catch(() => { });
+
+    return { cancelled: true };
+  }
+
+
+  // ─── Flow 3: Edit PDF (Apryse export → overwrite) ─────────────────────────
+
+  async editPdf(documentId: string, fileBuffer: Buffer) {
+    const doc = await this.documentModel.findById(documentId).lean();
+    if (!doc) throw new NotFoundException('Document not found');
+
+    // Overwrite the file at the existing storage key
+    await this.storage.overwrite(doc.pdfStorageKey, fileBuffer, 'application/pdf');
+
+    // Re-extract text preview from the edited PDF via background queue
+    await this.documentQueue.add('extract-pdf', {
+      documentId,
+      storageKey: doc.pdfStorageKey,
+    });
+
+    // updatedAt is handled by the worker once extraction completes;
+    // mark it immediately so the UI shows the document is being processed
+    return this.documentModel.findByIdAndUpdate(
+      documentId,
+      { processingStatus: 'processing', updatedAt: new Date() },
+      { new: true },
+    );
   }
 
   private async assignOwner(documentId: any, userId: string) {
@@ -84,9 +283,19 @@ export class DocumentService {
   }
 
   async findById(documentId: string) {
-    const doc = await this.documentModel.findById(documentId).populate('ownerId', 'fullName').lean();
+    const doc = await this.documentModel
+      .findById(documentId)
+      .populate('ownerId', 'fullName')
+      .lean();
+
     if (!doc) throw new NotFoundException('Document not found');
-    return doc
+
+    // Always resolve a fresh URL from the storage layer (handles signed URLs, CDN, etc.)
+    const pdfFileUrl = doc.pdfStorageKey
+      ? this.storage.getPublicUrl(doc.pdfStorageKey)
+      : null;
+
+    return { ...doc, pdfFileUrl };
   }
 
   async findByWorkspace(workspaceId: string) {
