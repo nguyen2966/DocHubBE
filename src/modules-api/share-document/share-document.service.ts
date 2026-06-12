@@ -1,11 +1,21 @@
-import { Injectable, ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 
-import { ShareDocumentDto, UpdateDocumentRoleDto } from './dto/share-document.dto';
+import {
+  ShareDocumentDto,
+  UpdateDocumentRoleDto,
+} from './dto/share-document.dto';
+
 import { WorkspaceMember } from 'src/modules-system/mongodb/schemas/workspace-member';
 import { DocumentPermission } from 'src/modules-system/mongodb/schemas/document-permission';
 import { User } from 'src/modules-system/mongodb/schemas/users';
+import { Document } from 'src/modules-system/mongodb/schemas/document';
+import { Workspace } from 'src/modules-system/mongodb/schemas/workspace';
 
 type SkipReason = 'WORKSPACE_MEMBER' | 'OWNER' | 'ALREADY_HAS_ROLE';
 
@@ -14,13 +24,27 @@ export class ShareDocumentService {
   constructor(
     @InjectModel('DocumentPermission')
     private readonly documentPermissionModel: Model<DocumentPermission>,
+
     @InjectModel(WorkspaceMember.name)
     private readonly memberModel: Model<WorkspaceMember>,
+
     @InjectModel(User.name)
     private readonly userModel: Model<User>,
-  ) {}
 
-  // ─── POST /members ──────────────────────────────────────────────────────────
+    @InjectModel('Document')
+    private readonly documentModel: Model<Document>,
+
+    @InjectModel(Workspace.name)
+    private readonly workspaceModel: Model<Workspace>
+  ) { }
+
+  private escapeRegex(value: string) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  private toId(value: any): string {
+    return value?._id?.toString?.() ?? value?.toString?.() ?? '';
+  }
 
   async shareDocument(
     documentId: string,
@@ -30,36 +54,50 @@ export class ShareDocumentService {
   ) {
     const { userIds, role } = dto;
 
-    // Fetch workspace members and existing permissions in bulk
+    const document = await this.documentModel
+      .findOne({ _id: documentId, workspaceId })
+      .select('_id ownerId')
+      .lean();
+
+    if (!document) {
+      throw new NotFoundException('Document not found');
+    }
+
+    const ownerId = this.toId((document as any).ownerId);
+
     const [workspaceMembers, existingPermissions] = await Promise.all([
-      this.memberModel.find({
-        workspaceId,
-        userId: { $in: userIds },
-        isDeleted: false,
-      }).lean(),
-      this.documentPermissionModel.find({
-        documentId,
-        userId: { $in: userIds },
-      }).lean(),
+      this.memberModel
+        .find({
+          workspaceId : new Types.ObjectId(workspaceId),
+          userId: { $in: userIds.map((u) => new Types.ObjectId(u)) },
+          isDeleted: false,
+        })
+        .lean(),
+
+      this.documentPermissionModel
+        .find({
+          documentId : new Types.ObjectId(documentId),
+          userId: { $in: userIds },
+        })
+        .lean(),
     ]);
 
     const workspaceMemberSet = new Set(
-      workspaceMembers.map((m) => m.userId.toString()),
+      workspaceMembers.map((m) => this.toId((m as any).userId)),
     );
-    const ownerSet = new Set(
-      existingPermissions
-        .filter((p) => p.role === 'owner')
-        .map((p) => p.userId.toString()),
-    );
+
     const existingRoleMap = new Map(
-      existingPermissions.map((p) => [p.userId.toString(), p.role]),
+      existingPermissions.map((p) => [
+        this.toId((p as any).userId),
+        (p as any).role,
+      ]),
     );
 
     const added: DocumentPermission[] = [];
     const skipped: Array<{ userId: string; reason: SkipReason }> = [];
 
     for (const userId of userIds) {
-      if (ownerSet.has(userId)) {
+      if (userId === ownerId) {
         skipped.push({ userId, reason: 'OWNER' });
         continue;
       }
@@ -70,166 +108,328 @@ export class ShareDocumentService {
       }
 
       const existingRole = existingRoleMap.get(userId);
-      if (existingRole && existingRole === role) {
+
+      if (existingRole === 'owner') {
+        skipped.push({ userId, reason: 'OWNER' });
+        continue;
+      }
+
+      if (existingRole === role) {
         skipped.push({ userId, reason: 'ALREADY_HAS_ROLE' });
         continue;
       }
 
-      // Upsert — handles both new grants and role updates
       const result = await this.documentPermissionModel.findOneAndUpdate(
         { documentId, userId },
-        { role, grantedBy },
-        { upsert: true, new: true },
+        {
+          documentId,
+          userId,
+          role,
+          grantedBy,
+        },
+        {
+          upsert: true,
+          new: true,
+          setDefaultsOnInsert: true,
+        },
       );
+
       added.push(result);
     }
 
     return { added, skipped };
   }
 
-  // ─── PATCH /members/:userId ─────────────────────────────────────────────────
-
   async updateRole(
     documentId: string,
+    workspaceId: string,
     userId: string,
     dto: UpdateDocumentRoleDto,
   ) {
-    const perm = await this.documentPermissionModel.findOne({ documentId, userId });
+    const document = await this.documentModel
+      .findOne({ _id: documentId, workspaceId })
+      .select('_id ownerId')
+      .lean();
+
+    if (!document) {
+      throw new NotFoundException('Document not found');
+    }
+
+    const ownerId = this.toId((document as any).ownerId);
+
+    if (userId === ownerId) {
+      throw new ConflictException('Cannot change role of document owner');
+    }
+
+    const [perm, workspaceMember] = await Promise.all([
+      this.documentPermissionModel.findOne({ documentId, userId }),
+      this.memberModel
+        .findOne({ 
+          workspaceId : new Types.ObjectId(workspaceId), 
+          userId : new Types.ObjectId(userId), 
+          isDeleted: false })
+        .lean(),
+    ]);
+
+    if (workspaceMember) {
+      throw new ConflictException('Workspace member already has access');
+    }
 
     if (!perm) {
       throw new NotFoundException('Permission not found');
     }
+
     if (perm.role === 'owner') {
       throw new ConflictException('Cannot change role of document owner');
+    }
+
+    if (perm.role === dto.role) {
+      throw new ConflictException(`User already has the '${dto.role}' role`);
     }
 
     perm.role = dto.role;
     return perm.save();
   }
 
-  // ─── DELETE /members/:userId ────────────────────────────────────────────────
+  async removeAccess(documentId: string, workspaceId: string, userId: string) {
 
-  async removeAccess(documentId: string, userId: string) {
-    const perm = await this.documentPermissionModel.findOne({ documentId, userId });
+
+    const document = await this.documentModel
+      .findOne({ _id: documentId, workspaceId: workspaceId })
+      .select('_id ownerId')
+      .lean();
+
+    if (!document) {
+      throw new NotFoundException('Document not found');
+    }
+
+    const ownerId = this.toId((document as any).ownerId);
+    console.log(document);
+
+    if (userId === ownerId) {
+      throw new ConflictException('Cannot remove document owner');
+    }
+
+    const [perm, workspaceMember] = await Promise.all([
+      this.documentPermissionModel.findOne({
+        documentId: documentId,
+        userId: userId,
+      }),
+
+      this.memberModel
+        .findOne({
+          workspaceId: workspaceId,
+          userId: userId,
+          isDeleted: false,
+        })
+        .lean(),
+    ]);
+
+    if (workspaceMember) {
+      throw new ConflictException('Workspace member already has access');
+    }
 
     if (!perm) {
       throw new NotFoundException('Permission not found');
     }
+
     if (perm.role === 'owner') {
       throw new ConflictException('Cannot remove document owner');
     }
 
-    await this.documentPermissionModel.deleteOne({ documentId, userId });
+    await this.documentPermissionModel.deleteOne({
+      documentId: documentId,
+      userId: userId,
+    });
+
+    return { success: true };
   }
 
-  // ─── GET /access ────────────────────────────────────────────────────────────
-
   async getDocumentAccess(documentId: string, workspaceId: string) {
-    const [ownerPerm, externalPerms, memberCount, workspace] = await Promise.all([
+
+    const document = await this.documentModel
+      .findOne({ _id: documentId, workspaceId: workspaceId })
+      .populate<{ ownerId: Pick<User, '_id' | 'fullName' | 'email'> }>(
+        'ownerId',
+        'fullName email ',
+      )
+      .lean()
+
+    if (!document) {
+      throw new NotFoundException('Document not found');
+    }
+
+    const ownerUser = (document as any).ownerId;
+    const ownerId = this.toId(ownerUser);
+
+    const [workspace, memberCount, allExplicitPerms] = await Promise.all([
+      this.workspaceModel
+        .findById(workspaceId)
+        .select('name')
+        .lean(),
+
+      this.memberModel.countDocuments({
+        workspaceId: new Types.ObjectId(workspaceId),
+        isDeleted: { $ne: true },
+      }),
+
       this.documentPermissionModel
-        .findOne({ documentId, role: 'owner' })
+        .find({
+          documentId: documentId,
+          role: { $ne: 'owner' },
+        })
         .populate<{ userId: Pick<User, '_id' | 'fullName' | 'email'> }>(
           'userId',
-          'fullName email avatarUrl',
+          'fullName email',
         )
-        .lean(),
-      this.documentPermissionModel
-        .find({ documentId, role: { $ne: 'owner' } })
-        .populate<{ userId: Pick<User, '_id' | 'fullName' | 'email' > }>(
-          'userId',
-          'fullName email avatarUrl',
-        )
-        .lean(),
-      this.memberModel.countDocuments({ workspaceId, isDeleted: false }),
-      // Populate workspace name via ref — adjust if you have a Workspace model injected
-      this.memberModel
-        .findOne({ workspaceId, isDeleted: false })
-        .populate('workspaceId', 'name')
         .lean(),
     ]);
 
-    const workspaceName =
-      (workspace?.workspaceId as any)?.name ?? '';
+    const explicitUserIds = allExplicitPerms.map((p) =>
+      this.toId((p as any).userId),
+    );
+    console.log(memberCount);
+    console.log(explicitUserIds);
+
+    const workspaceMembersWithExplicitPerm = explicitUserIds.length
+      ? await this.memberModel
+        .find({
+          workspaceId: workspaceId,
+          userId: {
+            $in: explicitUserIds.map((id) => new Types.ObjectId(id)),
+          },
+          isDeleted: { $ne: true },
+        })
+        .select('userId')
+        .lean()
+      : []
+
+    const workspaceMemberSet = new Set(
+      workspaceMembersWithExplicitPerm.map((m) =>
+        this.toId((m as any).userId),
+      ),
+    )
+
+    const externalPerms = allExplicitPerms.filter((p) => {
+      const userId = this.toId((p as any).userId)
+      return userId !== ownerId && !workspaceMemberSet.has(userId)
+    })
 
     return {
       workspace: {
         workspaceId,
-        workspaceName,
+        workspaceName: (workspace as any)?.name ?? '',
         memberCount,
         role: 'workspace_member' as const,
       },
-      owner: ownerPerm
-        ? {
-            userId: ownerPerm.userId._id.toString(),
-            fullName: (ownerPerm.userId as any).fullName,
-            email: (ownerPerm.userId as any).email,
-            avatarUrl: (ownerPerm.userId as any).avatarUrl ?? null,
-            role: 'owner' as const,
-          }
-        : null,
-      externalUsers: externalPerms.map((p) => ({
-        userId: p.userId._id.toString(),
-        fullName: (p.userId as any).fullName,
-        email: (p.userId as any).email,
-        avatarUrl: (p.userId as any).avatarUrl ?? null,
-        role: p.role,
-        permissionId: (p as any)._id.toString(),
-        createdAt: (p as any).createdAt?.toISOString() ?? null,
-      })),
-    };
-  }
 
-  // ─── GET /users/search ──────────────────────────────────────────────────────
+      owner: ownerUser
+        ? {
+          userId: ownerId,
+          fullName: ownerUser.fullName,
+          email: ownerUser.email,
+          avatarUrl: ownerUser.avatarUrl ?? null,
+          role: 'owner' as const,
+        }
+        : null,
+
+      externalUsers: externalPerms.map((p) => {
+        const user = (p as any).userId
+
+        return {
+          userId: this.toId(user),
+          fullName: user.fullName,
+          email: user.email,
+          avatarUrl: user.avatarUrl ?? null,
+          role: (p as any).role,
+          permissionId: this.toId((p as any)._id),
+          createdAt: (p as any).createdAt?.toISOString?.() ?? null,
+        }
+      }),
+    }
+  }
 
   async searchUsersWithContext(
     documentId: string,
     workspaceId: string,
     email: string,
   ) {
-    // 1. Find users matching the email query
+    const keyword = email?.trim();
+
+    if (!keyword || keyword.length < 2) {
+      return { results: [] };
+    }
+
+    const document = await this.documentModel
+      .findOne({ _id: documentId, workspaceId })
+      .select('_id ownerId')
+      .lean();
+
+    if (!document) {
+      throw new NotFoundException('Document not found');
+    }
+
+    const ownerId = this.toId((document as any).ownerId);
+
+    const escapedKeyword = this.escapeRegex(keyword);
+
     const users = await this.userModel
-      .find({ email: { $regex: email, $options: 'i' } })
+      .find({
+        email: { $regex: escapedKeyword, $options: 'i' },
+      })
       .select('_id fullName email avatarUrl')
       .limit(10)
       .lean();
 
-    if (!users.length) return { results: [] };
+    if (!users.length) {
+      return { results: [] };
+    }
 
-    const userIds = users.map((u) => u._id.toString());
+    const userIds = users.map((u) => this.toId((u as any)._id));
 
-    // 2. Batch fetch workspace membership + document permissions
     const [workspaceMembers, docPermissions] = await Promise.all([
-      this.memberModel.find({
-        workspaceId,
-        userId: { $in: userIds },
-        isDeleted: false,
-      }).lean(),
+      this.memberModel
+        .find({
+          workspaceId,
+          userId: { $in: userIds },
+          isDeleted: false,
+        })
+        .lean(),
+
       this.documentPermissionModel
-        .find({ documentId, userId: { $in: userIds } })
+        .find({
+          documentId,
+          userId: { $in: userIds },
+        })
         .lean(),
     ]);
 
     const workspaceMemberSet = new Set(
-      workspaceMembers.map((m) => m.userId.toString()),
+      workspaceMembers.map((m) => this.toId((m as any).userId)),
     );
+
     const permissionMap = new Map(
-      docPermissions.map((p) => [p.userId.toString(), p.role]),
+      docPermissions.map((p) => [
+        this.toId((p as any).userId),
+        (p as any).role,
+      ]),
     );
 
-    // 3. Build results
     const results = users.map((user) => {
-      const userId = user._id.toString();
+      const userId = this.toId((user as any)._id);
+
+      const isOwner = userId === ownerId;
       const isWorkspaceMember = workspaceMemberSet.has(userId);
-      const explicitDocumentRole = (permissionMap.get(userId) as any) ?? null;
-      const isOwner = explicitDocumentRole === 'owner';
 
-      // Effective role: workspace members always get their workspace-derived role;
-      // external users use their explicit permission.
-      const effectiveDocumentRole = isWorkspaceMember
-        ? 'editor' // Replace with getEffectiveDocumentRole() call if injecting PermissionService
-        : explicitDocumentRole;
+      const explicitRole = permissionMap.get(userId) ?? null;
+      const explicitDocumentRole =
+        explicitRole && explicitRole !== 'owner' ? explicitRole : null;
 
-      let disabledReason: 'OWNER' | 'WORKSPACE_MEMBER' | 'ALREADY_HAS_DOCUMENT_PERMISSION' | null = null;
+      let disabledReason:
+        | 'OWNER'
+        | 'WORKSPACE_MEMBER'
+        | 'ALREADY_HAS_DOCUMENT_PERMISSION'
+        | null = null;
 
       if (isOwner) {
         disabledReason = 'OWNER';
@@ -241,12 +441,16 @@ export class ShareDocumentService {
 
       return {
         userId,
-        fullName: user.fullName,
-        email: user.email,
+        fullName: (user as any).fullName,
+        email: (user as any).email,
+        avatarUrl: (user as any).avatarUrl ?? null,
+
         isWorkspaceMember,
         isOwner,
-        explicitDocumentRole: isOwner ? null : explicitDocumentRole,
-        effectiveDocumentRole: isOwner ? 'owner' : effectiveDocumentRole,
+
+        explicitDocumentRole,
+        effectiveDocumentRole: isOwner ? 'owner' : explicitDocumentRole,
+
         canBeShared: disabledReason === null,
         disabledReason,
       };
