@@ -31,6 +31,8 @@ import {
   INVITATION_TTL_DAYS,
   APP_URL,
 } from 'src/common/constants/app.constants'
+import { Document } from 'src/modules-system/mongodb/schemas/document'
+import { DocumentPermission } from 'src/modules-system/mongodb/schemas/document-permission'
 
 @Injectable()
 export class WorkspaceService implements OnModuleInit {
@@ -50,6 +52,10 @@ export class WorkspaceService implements OnModuleInit {
     private readonly userModel: Model<User>,
     @InjectModel(Role.name)
     private readonly roleModel: Model<Role>,
+    @InjectModel(Document.name)
+    private readonly documentModel: Model<Document>,
+    @InjectModel(DocumentPermission.name)
+    private readonly documentPermissionModel: Model<DocumentPermission>
   ) { }
 
   async onModuleInit() {
@@ -154,7 +160,7 @@ export class WorkspaceService implements OnModuleInit {
 
     const query: any = {
       userId: this.toId(userId),
-     // isDeleted: false
+      isDeleted: false
     }
 
     if (options.cursor) {
@@ -227,7 +233,7 @@ export class WorkspaceService implements OnModuleInit {
       .findOne({
         workspaceId: this.toId(workspaceId),
         userId: this.toId(userId),
-       // isDeleted: false,
+        // isDeleted: false,
       })
       .populate('roleId', 'name scope')
       .lean()
@@ -412,8 +418,27 @@ export class WorkspaceService implements OnModuleInit {
       )
     }
 
-    const target = await this.getMember(workspaceId, targetUserId)
-    if (!target) throw new NotFoundException('Member not found')
+    // 1. Get all document IDs belonging to this workspace
+    const workspaceDocs = await this.documentModel
+      .find({ workspaceId })
+      .select('_id')
+      .lean();
+    const docIds = workspaceDocs.map(doc => doc._id);
+
+    // 2. Revoke all explicit permissions for the removed user (their 'owner' rights on created docs)
+    await this.documentPermissionModel.deleteMany({
+      documentId: { $in: docIds },
+      userId: targetUserId
+    });
+
+    // 3. Revoke all permissions this user granted to external users
+    await this.documentPermissionModel.deleteMany({
+      documentId: { $in: docIds },
+      grantedBy: targetUserId
+    });
+
+    const target = await this.getMember(workspaceId, targetUserId);
+    if (!target) throw new NotFoundException('Member not found');
 
     if (target.roleId.equals(this.adminRoleId)) {
       const adminCount = await this.getActiveAdminCount(workspaceId)
@@ -425,7 +450,7 @@ export class WorkspaceService implements OnModuleInit {
     await this.memberModel.deleteOne({
       workspaceId: this.toId(workspaceId),
       userId: this.toId(targetUserId),
-    })
+    });
   }
 
   /**

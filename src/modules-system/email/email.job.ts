@@ -1,4 +1,4 @@
-export const EMAIL_QUEUE = 'email'
+export const EMAIL_QUEUE = 'email';
 
 export const EmailJobName = {
   SEND_VERIFICATION: 'send_verification',

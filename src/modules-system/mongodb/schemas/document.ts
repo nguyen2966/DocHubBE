@@ -20,13 +20,13 @@ export class Document {
   @Prop({ type: String, default: null })
   markdownContent: string | null
 
-  @Prop({ type: String, required: true })
+  @Prop({ type: String, required: false })
   pdfFileUrl: string
 
-  @Prop({ type: String, required: true })
+  @Prop({ type: String, required: false })
   pdfStorageKey: string
 
-  @Prop({ type: Number, required: true })
+  @Prop({ type: Number, required: false })
   fileSize: number
 
   @Prop({ type: String, default: null })
@@ -41,7 +41,7 @@ export class Document {
   @Prop({ type: Boolean, default: false })
   isExtractedTextTruncated: boolean
 
-  @Prop({ type: String, enum: ['processed', 'unprocessable'], default: 'processed' })
+  @Prop({ type: String, enum: ['processed', 'unprocessable', 'processing'], default: 'processed' })
   processingStatus: string
 }
 

@@ -13,6 +13,7 @@ import { Annotation, AnnotationSchema } from './schemas/annotation';
 import { Document, DocumentSchema } from './schemas/document';
 import { DocumentPermission, DocumentPermissionSchema } from './schemas/document-permission';
 import { Comment, CommentSchema } from './schemas/comment';
+import { UploadJob, UploadJobSchema } from './schemas/upload-job';
 
 @Global()
 @Module({
@@ -28,7 +29,8 @@ import { Comment, CommentSchema } from './schemas/comment';
       { name: Annotation.name, schema: AnnotationSchema },
       { name: Document.name, schema: DocumentSchema},
       { name: DocumentPermission.name, schema: DocumentPermissionSchema },
-      { name: Comment.name, schema: CommentSchema }
+      { name: Comment.name, schema: CommentSchema },
+      { name: UploadJob.name, schema: UploadJobSchema }
     ])
   ],
   exports: [MongooseModule],
