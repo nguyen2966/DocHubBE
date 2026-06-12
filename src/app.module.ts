@@ -22,6 +22,7 @@ import { REDIS_HOST, REDIS_PORT } from './common/constants/app.constants';
 import { PermissionsModule } from './modules-system/permissions/permissions.module';
 import { StorageModule } from './modules-system/storage/storage.module';
 import { WebsocketModule } from './modules-system/websocket/websocket.module';
+import { ShareDocumentModule } from './modules-api/share-document/share-document.module';
 
 @Module({
   imports: [AuthModule,
@@ -51,7 +52,8 @@ import { WebsocketModule } from './modules-system/websocket/websocket.module';
             }),
             PermissionsModule,
             StorageModule,
-            WebsocketModule
+            WebsocketModule,
+            ShareDocumentModule
           ],
   controllers: [AppController],
   providers: [AppService,
