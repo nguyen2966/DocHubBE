@@ -194,31 +194,7 @@ export class DocumentController {
     return this.documentService.delete(documentId)
   }
 
-  // Chia sẻ document
-  @Post(':documentId/members')
-  @UseGuards(DocumentPermissionGuard)
-  @RequireDocumentPermissions('document:manage_access')
-  share(
-    @Param('documentId') documentId: string,
-    @Param('workspaceId') workspaceId: string,
-    @Body() dto: ShareDocumentDto,
-    @Req() req: any,
-  ) {
-    return this.documentService.shareDocument(documentId, workspaceId, req.user._id.toString(), dto)
-  }
-
-  // Xóa quyền truy cập
-  @Delete(':documentId/members/:userId')
-  @UseGuards(DocumentPermissionGuard)
-  @RequireDocumentPermissions('document:manage_access')
-  removeAccess(
-    @Param('documentId') documentId: string,
-    @Param('userId') userId: string,
-    @Param('workspaceId') workspaceId: string
-  ) {
-    return this.documentService.removeAccess(documentId, userId)
-  }
-
+  
   // Lấy danh sách thành viên có quyền
   @Get(':documentId/members')
   @UseGuards(DocumentPermissionGuard)

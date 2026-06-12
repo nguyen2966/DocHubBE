@@ -65,56 +65,6 @@ export class DocumentService {
     return doc;
   }
 
-  // ─── Flow 2: Upload PDF ────────────────────────────────────────────────────
-
-  // async uploadPdf(
-  //   workspaceId: string,
-  //   ownerId: string,
-  //   file: Express.Multer.File,
-  //   titleInput: string,
-  //   jobId: string,
-  // ) {
-  //   await this.uploadJobService.update(jobId, { status: 'FILE_SAVED', progress: 33 });
-  //   const title = await this.resolveTitle(workspaceId, titleInput);
-
-  //   // Create the document record first so we have its _id for the storage key
-  //   const doc = await this.documentModel.create({
-  //     workspaceId,
-  //     ownerId,
-  //     title,
-  //     sourceType: 'file_upload',
-  //     fileSize: file.size,
-  //     processingStatus: 'processing',
-  //   });
-
-  //   const key = buildDocumentKey(workspaceId, doc._id.toString());
-  //   const { publicUrl } = await this.storage.upload(key, file.buffer, 'application/pdf');
-
-  //   // Storage xong -> progress = 66%
-  //   await this.uploadJobService.update(jobId, {
-  //     status: 'EXTRACTING',
-  //     progress: 66,
-  //     documentId: doc._id.toString(),
-  //   });
-
-  //   await this.documentModel.findByIdAndUpdate(doc._id, {
-  //     pdfStorageKey: key,
-  //     pdfFileUrl: publicUrl,
-  //   });
-
-  //   await this.assignOwner(doc._id, ownerId);
-
-  //   // Enqueue text extraction; worker reads from storage via key instead of
-  //   // re-passing the buffer (avoids large Redis payloads for big files)
-  //   await this.documentQueue.add('extract-pdf', {
-  //     documentId: doc._id.toString(),
-  //     storageKey: key,
-  //     jobId: jobId
-  //   });
-
-  //   return { ...doc.toObject(), pdfStorageKey: key, pdfFileUrl: publicUrl, jobId: jobId };
-  // }
-
   async uploadPdf(
     workspaceId: string,
     ownerId: string,
@@ -319,34 +269,6 @@ export class DocumentService {
   async delete(documentId: string) {
     await this.documentModel.findByIdAndDelete(documentId)
     // Annotations và comments được xử lý bởi cascade hoặc scheduled job
-  }
-
-  // Inside DocumentService -> shareDocument
-  async shareDocument(documentId: string, workspaceId: string, grantedBy: string, dto: ShareDocumentDto) {
-    // Rule 3: Prevent sharing to existing workspace members
-    const existingMember = await this.memberModel.findOne({
-      workspaceId,
-      userId: dto.userId,
-      isDeleted: false
-    });
-
-    if (existingMember) {
-      throw new ConflictException('Cannot share document with existing workspace members. They already have access.');
-    }
-
-    // Rule 4: Safely upsert for external users
-    return this.documentPermissionModel.findOneAndUpdate(
-      { documentId, userId: dto.userId },
-      { role: dto.role, grantedBy },
-      { upsert: true, new: true },
-    );
-  }
-
-  async removeAccess(documentId: string, userId: string) {
-    // Không cho remove owner
-    const perm = await this.documentPermissionModel.findOne({ documentId, userId })
-    if (perm?.role === 'owner') throw new ConflictException('Cannot remove document owner')
-    await this.documentPermissionModel.deleteOne({ documentId, userId })
   }
 
   async getMembers(documentId: string) {
