@@ -3,7 +3,7 @@ import { InjectModel } from '@nestjs/mongoose'
 import { Model } from 'mongoose'
 import { User } from 'src/modules-system/mongodb/schemas/users'
 import { WorkspaceMember } from 'src/modules-system/mongodb/schemas/workspace-member'
-import { Types } from 'mongoose'
+import { toObjectId, toStringId } from 'src/common/utils/mongo-id.util'
 
 export interface UserSearchResult {
   email: string
@@ -41,22 +41,22 @@ export class SearchService {
     ? new Set(
         (await this.memberModel
           .find({
-            workspaceId: new Types.ObjectId(workspaceId),
+            workspaceId: toObjectId(workspaceId),
             userId: { $in: users.map(u => u._id) },
             isDeleted: false,
           })
           .select('userId')
           .lean()
-        ).map(m => m.userId.toString())
+        ).map(m => toStringId(m.userId))
       )
     : null;
 
     return users.map((u) => ({
       email: u.email,
       isRegistered: true,
-      userId: (u._id as any).toString(),
+      userId: toStringId(u._id as any),
       fullName: u.fullName ?? undefined,
-      isMember: memberUserIds ? memberUserIds.has((u._id as any).toString()) : undefined,
+      isMember: memberUserIds ? memberUserIds.has(toStringId(u._id as any)) : undefined,
     }));
   }
 

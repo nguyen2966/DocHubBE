@@ -1,7 +1,7 @@
 import { Injectable, UnauthorizedException, Inject } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { Model } from 'mongoose';
 import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { RefreshToken } from '../mongodb/schemas/refresh-tokens';
@@ -9,6 +9,7 @@ import { REFRESH_TOKEN_TTL_DAYS } from 'src/common/constants/app.constants';
 import { TokenPayload } from './token.type';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { type Cache } from 'cache-manager';
+import { toObjectId } from 'src/common/utils/mongo-id.util';
 
 @Injectable()
 export class TokenService {
@@ -77,7 +78,7 @@ export class TokenService {
     )
 
     await this.refreshTokenModel.create({
-      userId: new Types.ObjectId(userId),
+      userId: toObjectId(userId),
       tokenHash,
       familyId,
       isRevoked: false,
@@ -156,7 +157,7 @@ export class TokenService {
 
   async revokeAllRefreshTokensByUser(userId: string): Promise<void> {
     await this.refreshTokenModel.updateMany(
-      { userId: new Types.ObjectId(userId), isRevoked: false },
+      { userId: toObjectId(userId), isRevoked: false },
       { isRevoked: true, revokedAt: new Date(), revokedReason: 'manual_revoke' },
     )
   }

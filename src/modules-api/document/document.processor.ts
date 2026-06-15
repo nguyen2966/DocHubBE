@@ -13,6 +13,7 @@ import { StorageContract } from 'src/modules-system/storage/storage.contract';
 import { buildDocumentKey } from 'src/modules-system/storage/storage-key.util';
 import { UploadJobService } from './upload-job.service';
 import { UploadJob } from 'src/modules-system/mongodb/schemas/upload-job';
+import { toObjectId } from 'src/common/utils/mongo-id.util';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -65,6 +66,7 @@ export class DocumentProcessor extends WorkerHost {
 
 
   private async handleExtractPdf({ documentId, storageKey, jobId }: ExtractPdfJob) {
+    const documentObjectId = toObjectId(documentId);
     // Helper: check xem job có bị cancel không
     const isCancelled = async () => {
       const job = await this.uploadJobModel.findOne({ jobId }).lean();
@@ -95,7 +97,7 @@ export class DocumentProcessor extends WorkerHost {
       // check lần cuối trước khi ghi kết quả vào DB
       if (await isCancelled()) return;
 
-      await this.documentModel.findByIdAndUpdate(documentId, {
+      await this.documentModel.findByIdAndUpdate(documentObjectId, {
         extractedTextPreview: text || null,
         processingStatus: 'processed',
         updatedAt: new Date(),
@@ -108,7 +110,7 @@ export class DocumentProcessor extends WorkerHost {
       const job = await this.uploadJobModel.findOne({ jobId }).lean();
       if (job?.isCancelled) return;
 
-      await this.documentModel.findByIdAndUpdate(documentId, { processingStatus: 'unprocessable' });
+      await this.documentModel.findByIdAndUpdate(documentObjectId, { processingStatus: 'unprocessable' });
       await this.uploadJobService.update(jobId, { status: 'FAILED', errorMessage: error.message });
     }
   }
@@ -118,6 +120,7 @@ export class DocumentProcessor extends WorkerHost {
     markdownContent,
     workspaceId,
   }: ConvertMarkdownJob): Promise<void> {
+    const documentObjectId = toObjectId(documentId);
     try {
       // ── Step 1: markdown → HTML ────────────────────────────────────────────
       const html = await this.renderMarkdownToHtml(markdownContent);
@@ -139,7 +142,7 @@ export class DocumentProcessor extends WorkerHost {
       const isTruncated = rawText.length > EXTRACTED_TEXT_LIMIT;
 
       // ── Step 5: Persist everything ─────────────────────────────────────────
-      await this.documentModel.findByIdAndUpdate(documentId, {
+      await this.documentModel.findByIdAndUpdate(documentObjectId, {
         pdfStorageKey: key,
         pdfFileUrl: publicUrl,
         fileSize: pdfBuffer.byteLength,
@@ -154,7 +157,7 @@ export class DocumentProcessor extends WorkerHost {
     } catch (error) {
       this.logger.error(`convert-markdown failed for ${documentId}`, error);
 
-      await this.documentModel.findByIdAndUpdate(documentId, {
+      await this.documentModel.findByIdAndUpdate(documentObjectId, {
         processingStatus: 'unprocessable',
       });
     }

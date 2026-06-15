@@ -1,10 +1,15 @@
 import { Injectable } from '@nestjs/common'
 import { InjectModel } from '@nestjs/mongoose'
-import { Model, Types } from 'mongoose'
+import { Model } from 'mongoose'
 import { WorkspaceMember } from '../mongodb/schemas/workspace-member'
 import { Role } from '../mongodb/schemas/role'
 import { WORKSPACE_ROLE_PERMISSIONS, DOCUMENT_ROLE_PERMISSIONS, WORKSPACE_ROLE_TO_DOCUMENT_ROLE } from './roles/role.permissions'
 import { DocumentPermission } from '../mongodb/schemas/document-permission'
+import {
+  toObjectId,
+  toObjectIds,
+  toStringId,
+} from 'src/common/utils/mongo-id.util'
 
 
 @Injectable()
@@ -23,9 +28,9 @@ export class PermissionsService {
   ): Promise<string | null> {
     const member = await this.workspaceMemberModel
       .findOne({
-        userId: new Types.ObjectId(userId),
-        workspaceId: new Types.ObjectId(workspaceId),
-        // isDeleted: false // Đừng quên thêm điều kiện này để chặn user đã bị xóa
+        userId: toObjectId(userId),
+        workspaceId: toObjectId(workspaceId),
+        isDeleted: false,
       })
       .populate<{ roleId: { name: string } }>('roleId', 'name')
       .lean();
@@ -42,8 +47,9 @@ export class PermissionsService {
   ): Promise<boolean> {
     const membership = await this.workspaceMemberModel
       .findOne({
-        workspaceId: new Types.ObjectId(workspaceId),
-        userId: new Types.ObjectId(userId),
+        workspaceId: toObjectId(workspaceId),
+        userId: toObjectId(userId),
+        isDeleted: false,
       })
       .populate<{ roleId: Role }>('roleId')
       .lean();
@@ -64,26 +70,26 @@ export class PermissionsService {
     documentId: string,
     permission: string,
   ): Promise<boolean> {
-    // 1. Explicit Permissions First: Check if they are the creator/owner OR an external user
-    const docPerm = await this.documentPermissionModel
-      .findOne({ userId, documentId })
-      .lean();
+    const [docPerm, roleName] = await Promise.all([
+      this.documentPermissionModel
+        .findOne({
+          userId: toObjectId(userId),
+          documentId: toObjectId(documentId),
+        })
+        .lean(),
+      this.getWorkspaceRoleName(userId, workspaceId),
+    ]);
 
-    console.log(docPerm);
-
-    if (docPerm) {
+    // Explicit owner access is valid only while the user is a workspace member.
+    if (docPerm && (docPerm.role !== 'owner' || roleName)) {
       const allowed = DOCUMENT_ROLE_PERMISSIONS[docPerm.role] ?? [];
       if (allowed.includes(permission)) return true;
     }
-
-    // 2. Workspace Fallback: If no explicit permission, check workspace defaults (Rules 1 & 2)
-    const roleName = await this.getWorkspaceRoleName(userId, workspaceId);
 
     if (roleName) {
       const impliedDocRole = WORKSPACE_ROLE_TO_DOCUMENT_ROLE[roleName];
       if (impliedDocRole) {
         const impliedPerms = DOCUMENT_ROLE_PERMISSIONS[impliedDocRole] ?? [];
-        console.log(impliedDocRole);
         return impliedPerms.includes(permission);
       }
     }
@@ -98,17 +104,24 @@ export class PermissionsService {
     workspaceId: string,
     documentId: string,
   ): Promise<string | null> {
-    const roleName = await this.getWorkspaceRoleName(userId, workspaceId);
+    const [roleName, docPerm] = await Promise.all([
+      this.getWorkspaceRoleName(userId, workspaceId),
+      this.documentPermissionModel
+        .findOne({
+          userId: toObjectId(userId),
+          documentId: toObjectId(documentId),
+        })
+        .lean(),
+    ]);
 
     if (roleName) {
+      if (docPerm?.role === 'owner') {
+        return 'owner';
+      }
       return WORKSPACE_ROLE_TO_DOCUMENT_ROLE[roleName] ?? null;
     }
 
-    const docPerm = await this.documentPermissionModel
-      .findOne({ userId, documentId })
-      .lean();
-
-    return docPerm?.role ?? null;
+    return docPerm?.role === 'owner' ? null : (docPerm?.role ?? null);
   }
 
   // src/modules-system/permissions/permissions.service.ts
@@ -130,21 +143,24 @@ export class PermissionsService {
 
     // 2. Chỉ query 1 lần lấy toàn bộ Explicit Permissions của User trên các Docs này
     const docPerms = await this.documentPermissionModel.find({
-      userId: new Types.ObjectId(userId),
-      documentId: { $in: documentIds.map(id => new Types.ObjectId(id)) }
+      userId: toObjectId(userId),
+      documentId: { $in: toObjectIds(documentIds) }
     }).lean();
 
     // Tạo Map để tra cứu nhanh (O(1))
     const explicitRoleMap = new Map();
     for (const perm of docPerms) {
-      explicitRoleMap.set(perm.documentId.toString(), perm.role);
+      explicitRoleMap.set(toStringId(perm.documentId), perm.role);
     }
 
     // 3. Phân giải quyền cho từng Document
     const result: Record<string, string[]> = {};
     for (const docId of documentIds) {
       // Ưu tiên quyền trực tiếp (owner, share external), nếu không có thì dùng quyền mặc định từ workspace
-      const finalRole = explicitRoleMap.get(docId) || impliedDocRole;
+      const explicitRole = explicitRoleMap.get(docId);
+      const finalRole = roleName
+        ? (explicitRole === 'owner' ? 'owner' : impliedDocRole)
+        : (explicitRole === 'owner' ? null : explicitRole);
 
       // Map từ role ra mảng string permissions
       result[docId] = finalRole ? (DOCUMENT_ROLE_PERMISSIONS[finalRole] ?? []) : [];

@@ -33,6 +33,11 @@ import {
 } from 'src/common/constants/app.constants'
 import { Document } from 'src/modules-system/mongodb/schemas/document'
 import { DocumentPermission } from 'src/modules-system/mongodb/schemas/document-permission'
+import {
+  toObjectId,
+  toObjectIds,
+  toStringId,
+} from 'src/common/utils/mongo-id.util'
 
 @Injectable()
 export class WorkspaceService implements OnModuleInit {
@@ -74,8 +79,54 @@ export class WorkspaceService implements OnModuleInit {
 
   // ─── Private Helpers ──────────────────────────────────────
 
-  private toId(id: string): Types.ObjectId {
-    return new Types.ObjectId(id)
+  private async deleteExternalDocumentPermissionsAfterJoinWorkspace(
+    workspaceId: string,
+    userId: string,
+  ): Promise<void> {
+    const userObjectId = toObjectId(userId)
+    const docIds = await this.getWorkspaceDocumentIds(workspaceId)
+
+    if (!docIds.length) return
+
+    await this.documentPermissionModel.deleteMany({
+      userId: userObjectId,
+      documentId: { $in: docIds },
+    })
+  }
+
+  private async getWorkspaceDocumentIds(
+    workspaceId: string | Types.ObjectId,
+  ): Promise<Types.ObjectId[]> {
+    const workspaceDocs = await this.documentModel
+      .find({
+        workspaceId: toObjectId(workspaceId),
+      })
+      .select('_id')
+      .lean()
+
+    return toObjectIds(
+      workspaceDocs.map((doc) => doc._id as Types.ObjectId),
+    )
+  }
+
+  private async deleteDocumentPermissionsForWorkspaceUser(
+    workspaceId: string,
+    userId: string,
+  ): Promise<void> {
+    const docIds = await this.getWorkspaceDocumentIds(workspaceId)
+    if (!docIds.length) return
+
+    const userObjectId = toObjectId(userId)
+    await Promise.all([
+      this.documentPermissionModel.deleteMany({
+        documentId: { $in: docIds },
+        userId: userObjectId,
+      }),
+      this.documentPermissionModel.deleteMany({
+        documentId: { $in: docIds },
+        grantedBy: userObjectId,
+      }),
+    ])
   }
 
   /**
@@ -85,8 +136,8 @@ export class WorkspaceService implements OnModuleInit {
   private async getMember(workspaceId: string, userId: string) {
     return this.memberModel
       .findOne({
-        workspaceId: this.toId(workspaceId),
-        userId: this.toId(userId),
+        workspaceId: toObjectId(workspaceId),
+        userId: toObjectId(userId),
         isDeleted: false
       })
       .lean()
@@ -114,7 +165,7 @@ export class WorkspaceService implements OnModuleInit {
 
   private async getActiveAdminCount(workspaceId: string): Promise<number> {
     return this.memberModel.countDocuments({
-      workspaceId: this.toId(workspaceId),
+      workspaceId: toObjectId(workspaceId),
       roleId: this.adminRoleId,
       // isDeleted filter đã được xử lý bởi pre-hook
     })
@@ -125,7 +176,7 @@ export class WorkspaceService implements OnModuleInit {
     return {
       isDeleted: true,
       deletedAt: new Date(),
-      deletedBy: this.toId(actorId),
+      deletedBy: toObjectId(actorId),
     }
   }
 
@@ -135,14 +186,14 @@ export class WorkspaceService implements OnModuleInit {
     const workspace = await this.workspaceModel.create({
       name: dto.name,
       description: dto.description ?? '',
-      createdBy: this.toId(userId),
+      createdBy: toObjectId(userId),
     })
 
     await this.memberModel.create({
       workspaceId: workspace._id as Types.ObjectId,
-      userId: this.toId(userId),
+      userId: toObjectId(userId),
       roleId: this.adminRoleId,
-      invitedBy: this.toId(userId),
+      invitedBy: toObjectId(userId),
       joinedAt: new Date(),
     })
 
@@ -159,12 +210,12 @@ export class WorkspaceService implements OnModuleInit {
     const limit = Math.min(options.limit ?? 20, 50)
 
     const query: any = {
-      userId: this.toId(userId),
+      userId: toObjectId(userId),
       isDeleted: false
     }
 
     if (options.cursor) {
-      query._id = { $lt: this.toId(options.cursor) }
+      query._id = { $lt: toObjectId(options.cursor) }
     }
 
     const memberships = await this.memberModel
@@ -178,9 +229,11 @@ export class WorkspaceService implements OnModuleInit {
     const hasMore = memberships.length > limit
     const pageItems = hasMore ? memberships.slice(0, limit) : memberships
 
-    const workspaceIds = pageItems
-      .map((m) => (m.workspaceId as any)?._id)
-      .filter(Boolean)
+    const workspaceIds = toObjectIds(
+      pageItems
+        .map((m) => (m.workspaceId as any)?._id)
+        .filter(Boolean),
+    )
 
     const memberCounts = await this.memberModel.aggregate([
       {
@@ -199,7 +252,7 @@ export class WorkspaceService implements OnModuleInit {
 
     const memberCountMap = new Map<string, number>(
       memberCounts.map((item) => [
-        item._id.toString(),
+        toStringId(item._id),
         item.count,
       ]),
     )
@@ -208,7 +261,7 @@ export class WorkspaceService implements OnModuleInit {
       items: pageItems.map((m) => {
         const workspace = m.workspaceId as any
         const role = m.roleId as any
-        const workspaceId = workspace._id.toString()
+        const workspaceId = toStringId(workspace._id)
 
         return {
           ...workspace,
@@ -222,7 +275,7 @@ export class WorkspaceService implements OnModuleInit {
       }),
       nextCursor:
         hasMore && pageItems.length > 0
-          ? pageItems[pageItems.length - 1]._id.toString()
+          ? toStringId(pageItems[pageItems.length - 1]._id)
           : null,
       hasMore,
     }
@@ -231,8 +284,8 @@ export class WorkspaceService implements OnModuleInit {
   async findOne(workspaceId: string, userId: string) {
     const membership = await this.memberModel
       .findOne({
-        workspaceId: this.toId(workspaceId),
-        userId: this.toId(userId),
+        workspaceId: toObjectId(workspaceId),
+        userId: toObjectId(userId),
         // isDeleted: false,
       })
       .populate('roleId', 'name scope')
@@ -243,7 +296,7 @@ export class WorkspaceService implements OnModuleInit {
     }
 
     const workspace = await this.workspaceModel
-      .findById(workspaceId)
+      .findById(toObjectId(workspaceId))
       .lean()
 
     if (!workspace) {
@@ -270,7 +323,7 @@ export class WorkspaceService implements OnModuleInit {
     await this.assertAdmin(workspaceId, userId)
 
     const workspace = await this.workspaceModel
-      .findByIdAndUpdate(workspaceId, { $set: dto }, { new: true })
+      .findByIdAndUpdate(toObjectId(workspaceId), { $set: dto }, { new: true })
       .lean()
 
     if (!workspace) throw new NotFoundException('Workspace không tồn tại')
@@ -287,12 +340,13 @@ export class WorkspaceService implements OnModuleInit {
     await this.assertAdmin(workspaceId, userId)
 
     const now = new Date()
-    const deletedBy = this.toId(userId)
-    const wsId = this.toId(workspaceId)
+    const deletedBy = toObjectId(userId)
+    const wsId = toObjectId(workspaceId)
+    const docIds = await this.getWorkspaceDocumentIds(wsId)
 
     await Promise.all([
       // Soft delete workspace
-      this.workspaceModel.findByIdAndUpdate(workspaceId, {
+      this.workspaceModel.findByIdAndUpdate(wsId, {
         $set: { isDeleted: true, deletedAt: now, deletedBy },
       }),
 
@@ -307,6 +361,10 @@ export class WorkspaceService implements OnModuleInit {
         { workspaceId: wsId, status: 'pending' },
         { $set: { status: 'expired' } },
       ),
+
+      this.documentPermissionModel.deleteMany({
+        documentId: { $in: docIds },
+      }),
     ])
   }
 
@@ -316,7 +374,7 @@ export class WorkspaceService implements OnModuleInit {
     await this.assertMember(workspaceId, userId)
 
     return this.memberModel
-      .find({ workspaceId: this.toId(workspaceId), isDeleted: false })
+      .find({ workspaceId: toObjectId(workspaceId), isDeleted: false })
       .populate('userId', 'fullName email')
       .populate('roleId', 'name')
       .lean()
@@ -380,8 +438,8 @@ export class WorkspaceService implements OnModuleInit {
     const updated = await this.memberModel
       .findOneAndUpdate(
         {
-          workspaceId: this.toId(workspaceId),
-          userId: this.toId(targetUserId),
+          workspaceId: toObjectId(workspaceId),
+          userId: toObjectId(targetUserId),
         },
         {
           roleId: newRoleId,
@@ -418,25 +476,6 @@ export class WorkspaceService implements OnModuleInit {
       )
     }
 
-    // 1. Get all document IDs belonging to this workspace
-    const workspaceDocs = await this.documentModel
-      .find({ workspaceId })
-      .select('_id')
-      .lean();
-    const docIds = workspaceDocs.map(doc => doc._id);
-
-    // 2. Revoke all explicit permissions for the removed user (their 'owner' rights on created docs)
-    await this.documentPermissionModel.deleteMany({
-      documentId: { $in: docIds },
-      userId: targetUserId
-    });
-
-    // 3. Revoke all permissions this user granted to external users
-    await this.documentPermissionModel.deleteMany({
-      documentId: { $in: docIds },
-      grantedBy: targetUserId
-    });
-
     const target = await this.getMember(workspaceId, targetUserId);
     if (!target) throw new NotFoundException('Member not found');
 
@@ -447,9 +486,14 @@ export class WorkspaceService implements OnModuleInit {
       }
     }
 
+    await this.deleteDocumentPermissionsForWorkspaceUser(
+      workspaceId,
+      targetUserId,
+    )
+
     await this.memberModel.deleteOne({
-      workspaceId: this.toId(workspaceId),
-      userId: this.toId(targetUserId),
+      workspaceId: toObjectId(workspaceId),
+      userId: toObjectId(targetUserId),
     });
   }
 
@@ -468,8 +512,10 @@ export class WorkspaceService implements OnModuleInit {
       }
     }
 
+    await this.deleteDocumentPermissionsForWorkspaceUser(workspaceId, userId)
+
     await this.memberModel.findOneAndUpdate(
-      { workspaceId: this.toId(workspaceId), userId: this.toId(userId) },
+      { workspaceId: toObjectId(workspaceId), userId: toObjectId(userId) },
       { $set: this.softDeleteUpdate(userId) },
     )
   }
@@ -484,8 +530,8 @@ export class WorkspaceService implements OnModuleInit {
     await this.assertAdmin(workspaceId, actorId)
 
     const [workspace, inviter] = await Promise.all([
-      this.workspaceModel.findById(workspaceId).lean(),
-      this.userModel.findById(actorId).lean(),
+      this.workspaceModel.findById(toObjectId(workspaceId)).lean(),
+      this.userModel.findById(toObjectId(actorId)).lean(),
     ])
 
     // Batch lookup: 1 query cho toàn bộ emails thay vì N queries
@@ -503,7 +549,7 @@ export class WorkspaceService implements OnModuleInit {
     const existingMembers = registeredUserIds.length
       ? await this.memberModel
         .find({
-          workspaceId: this.toId(workspaceId),
+          workspaceId: toObjectId(workspaceId),
           userId: { $in: registeredUserIds },
           isDeleted: false,
         })
@@ -512,7 +558,7 @@ export class WorkspaceService implements OnModuleInit {
       : []
 
     const alreadyMemberUserIds = new Set(
-      existingMembers.map((m) => m.userId.toString()),
+      existingMembers.map((m) => toStringId(m.userId)),
     )
 
     // Xử lý từng email song song — mỗi email độc lập, lỗi 1 cái không ảnh hưởng cái khác
@@ -523,14 +569,14 @@ export class WorkspaceService implements OnModuleInit {
           const isRegistered = !!existingUser
 
           // Guard: đã là member
-          if (existingUser && alreadyMemberUserIds.has(existingUser._id.toString())) {
+          if (existingUser && alreadyMemberUserIds.has(toStringId(existingUser._id))) {
             return { email, status: 'already_member' }
           }
 
           // Expire pending invitations cũ của email này trong workspace
           await this.invitationModel.updateMany(
             {
-              workspaceId: this.toId(workspaceId),
+              workspaceId: toObjectId(workspaceId),
               invitedEmail: email,
               status: 'pending',
             },
@@ -542,10 +588,10 @@ export class WorkspaceService implements OnModuleInit {
           const expiresAt = new Date(Date.now() + ttlDays * 86_400 * 1000)
 
           const invitation = await this.invitationModel.create({
-            workspaceId: this.toId(workspaceId),
+            workspaceId: toObjectId(workspaceId),
             invitedEmail: email,
             invitedUserId: existingUser?._id ?? null,
-            invitedBy: this.toId(actorId),
+            invitedBy: toObjectId(actorId),
             role: dto.role,
             token,
             status: 'pending',
@@ -571,7 +617,7 @@ export class WorkspaceService implements OnModuleInit {
           return {
             email,
             status: 'invited',
-            invitationId: (invitation._id as any).toString(),
+            invitationId: toStringId(invitation._id as any),
           }
         } catch (err) {
           console.error(`[inviteMember] unexpected error for ${email}:`, err)
@@ -633,7 +679,6 @@ export class WorkspaceService implements OnModuleInit {
     }
 
     if (!userId) {
-      console.log("No userID");
       return {
         action: InvitationAction.SIGN_IN,
         token,
@@ -673,7 +718,7 @@ export class WorkspaceService implements OnModuleInit {
       throw new BadRequestException('Lời mời đã hết hạn')
     }
 
-    const user = await this.userModel.findById(userId).lean()
+    const user = await this.userModel.findById(toObjectId(userId)).lean()
     if (!user) throw new NotFoundException('User không tồn tại')
 
     if (user.email.toLowerCase() !== invitation.invitedEmail) {
@@ -681,7 +726,7 @@ export class WorkspaceService implements OnModuleInit {
     }
 
     const alreadyMember = await this.getMember(
-      invitation.workspaceId.toString(),
+      toStringId(invitation.workspaceId),
       userId,
     )
     if (alreadyMember) {
@@ -693,20 +738,23 @@ export class WorkspaceService implements OnModuleInit {
     await Promise.all([
       this.memberModel.create({
         workspaceId: invitation.workspaceId,
-        userId: this.toId(userId),
+        userId: toObjectId(userId),
         roleId,
         invitedBy: invitation.invitedBy,
         joinedAt: new Date(),
       }),
       this.invitationModel.updateOne(
         { token },
-        { status: 'accepted', invitedUserId: this.toId(userId) },
+        { status: 'accepted', invitedUserId: toObjectId(userId) },
       ),
     ]);
 
-    console.log("called");
+    await this.deleteExternalDocumentPermissionsAfterJoinWorkspace(
+      toStringId(invitation.workspaceId),
+      userId,
+    );
 
-    return { workspaceId: invitation.workspaceId.toString() }
+    return { workspaceId: toStringId(invitation.workspaceId) }
   }
 
   /**
@@ -734,7 +782,7 @@ export class WorkspaceService implements OnModuleInit {
       pendingInvitations.map(async (inv) => {
         // Kiểm tra chưa là member (trường hợp edge case invite 2 lần)
         const alreadyMember = await this.getMember(
-          inv.workspaceId.toString(),
+          toStringId(inv.workspaceId),
           userId,
         )
         if (alreadyMember) return
@@ -744,20 +792,25 @@ export class WorkspaceService implements OnModuleInit {
         await Promise.all([
           this.memberModel.create({
             workspaceId: inv.workspaceId,
-            userId: this.toId(userId),
+            userId: toObjectId(userId),
             roleId,
             invitedBy: inv.invitedBy,
             joinedAt: new Date(),
           }),
           this.invitationModel.updateOne(
             { _id: inv._id },
-            { status: 'accepted', invitedUserId: this.toId(userId) },
+            { status: 'accepted', invitedUserId: toObjectId(userId) },
           ),
-        ])
+        ]);
 
-        joinedWorkspaceIds.push(inv.workspaceId.toString())
+        await this.deleteExternalDocumentPermissionsAfterJoinWorkspace(
+          toStringId(inv.workspaceId),
+          userId,
+        );
+
+        joinedWorkspaceIds.push(toStringId(inv.workspaceId))
       }),
-    )
+    );
 
     return joinedWorkspaceIds
   }
@@ -766,7 +819,7 @@ export class WorkspaceService implements OnModuleInit {
     await this.assertAdmin(workspaceId, actorId)
 
     return this.invitationModel
-      .find({ workspaceId: this.toId(workspaceId), status: 'pending' })
+      .find({ workspaceId: toObjectId(workspaceId), status: 'pending' })
       .populate('invitedBy', 'fullName email')
       .lean()
   }
@@ -779,8 +832,8 @@ export class WorkspaceService implements OnModuleInit {
     await this.assertAdmin(workspaceId, actorId)
 
     const invitation = await this.invitationModel.findOne({
-      _id: this.toId(invitationId),
-      workspaceId: this.toId(workspaceId),
+      _id: toObjectId(invitationId),
+      workspaceId: toObjectId(workspaceId),
     })
 
     if (!invitation) throw new NotFoundException('Lời mời không tồn tại')
