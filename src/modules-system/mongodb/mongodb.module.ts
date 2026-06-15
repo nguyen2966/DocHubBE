@@ -14,6 +14,7 @@ import { Document, DocumentSchema } from './schemas/document';
 import { DocumentPermission, DocumentPermissionSchema } from './schemas/document-permission';
 import { Comment, CommentSchema } from './schemas/comment';
 import { UploadJob, UploadJobSchema } from './schemas/upload-job';
+import { PendingDocumentShare, PendingDocumentShareSchema } from './schemas/pending-document-invitation';
 
 @Global()
 @Module({
@@ -30,7 +31,8 @@ import { UploadJob, UploadJobSchema } from './schemas/upload-job';
       { name: Document.name, schema: DocumentSchema},
       { name: DocumentPermission.name, schema: DocumentPermissionSchema },
       { name: Comment.name, schema: CommentSchema },
-      { name: UploadJob.name, schema: UploadJobSchema }
+      { name: UploadJob.name, schema: UploadJobSchema },
+      { name: PendingDocumentShare.name, schema: PendingDocumentShareSchema }
     ])
   ],
   exports: [MongooseModule],
