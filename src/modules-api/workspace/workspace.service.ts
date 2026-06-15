@@ -525,13 +525,31 @@ export class WorkspaceService implements OnModuleInit {
       )
     }
 
-    const target = await this.getMember(workspaceId, targetUserId);
-    if (!target) throw new NotFoundException('Member not found');
+    const targetMember = await this.memberModel
+      .findOne({
+        workspaceId: toObjectId(workspaceId),
+        userId: toObjectId(targetUserId),
+        isDeleted: false,
+      })
+      .populate('userId', 'fullName email avatarUrl')
+      .populate('roleId', 'name')
+      .lean()
 
-    if (target.roleId.equals(this.adminRoleId)) {
+    if (!targetMember) {
+      throw new NotFoundException('Member not found')
+    }
+
+    const targetUser = targetMember.userId as any
+    const targetRole = targetMember.roleId as any
+    const targetRoleName = targetRole?.name
+
+    if (targetRoleName === 'admin') {
       const adminCount = await this.getActiveAdminCount(workspaceId)
+
       if (adminCount <= 1) {
-        throw new BadRequestException('Workspace must have at least 1 admin');
+        throw new BadRequestException(
+          'Workspace must have at least 1 admin',
+        )
       }
     }
 
@@ -540,10 +558,15 @@ export class WorkspaceService implements OnModuleInit {
       targetUserId,
     )
 
-    await this.memberModel.deleteOne({
+    const deleteResult = await this.memberModel.deleteOne({
       workspaceId: toObjectId(workspaceId),
       userId: toObjectId(targetUserId),
-    });
+      isDeleted: false,
+    })
+
+    if (deleteResult.deletedCount === 0) {
+      throw new NotFoundException('Member not found')
+    }
 
     await this.activityService.recordSafe({
       workspaceId,
@@ -551,6 +574,15 @@ export class WorkspaceService implements OnModuleInit {
       actionType: ACTIVITY_ACTION.REMOVE_USER,
       targetType: ACTIVITY_TARGET.MEMBER,
       targetId: targetUserId,
+      metadata: {
+        targetUserId,
+        targetUserEmail: targetUser?.email,
+        targetUserFullName: targetUser?.fullName,
+        targetUserAvatarUrl: targetUser?.avatarUrl ?? null,
+        oldRole: targetRoleName,
+        removedRole: targetRoleName,
+        selfRemoved: false,
+      },
     })
   }
 
