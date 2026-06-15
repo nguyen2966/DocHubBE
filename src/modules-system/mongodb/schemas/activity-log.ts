@@ -30,6 +30,13 @@ export class ActivityLog {
 
 export const ActivityLogSchema = SchemaFactory.createForClass(ActivityLog)
 
-ActivityLogSchema.index({ workspaceId: 1, createdAt: -1 })
-ActivityLogSchema.index({ actorId: 1 })
-ActivityLogSchema.index({ actionType: 1 })
+ActivityLogSchema.index({ workspaceId: 1, createdAt: -1, _id: -1 })
+ActivityLogSchema.index({ workspaceId: 1, actorId: 1, createdAt: -1, _id: -1 })
+ActivityLogSchema.index({ workspaceId: 1, actionType: 1, createdAt: -1, _id: -1 })
+ActivityLogSchema.index({
+  workspaceId: 1,
+  actorId: 1,
+  actionType: 1,
+  createdAt: -1,
+  _id: -1,
+})

@@ -14,12 +14,19 @@ import { ActivityService } from './activity.service'
 import { ActivityLogQueryDto } from './dto/activity-log-query.dto'
 
 @Controller('workspaces/:workspaceId/activity-logs')
+@UseGuards(WorkspacePermissionGuard)
+@RequireWorkspacePermission('workspace:view_activity_log')
 export class ActivityController {
   constructor(private readonly activityService: ActivityService) {}
 
+  @Get('actors')
+  async findActors(@Param('workspaceId') workspaceId: string) {
+    return {
+      data: await this.activityService.findActorsByWorkspace(workspaceId),
+    }
+  }
+
   @Get()
-  @UseGuards(WorkspacePermissionGuard)
-  @RequireWorkspacePermission('workspace:view_activity_log')
   @UseInterceptors(PagePaginationResponseInterceptor)
   findByWorkspace(
     @Param('workspaceId') workspaceId: string,

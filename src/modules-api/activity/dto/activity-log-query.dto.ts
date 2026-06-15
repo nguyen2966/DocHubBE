@@ -1,17 +1,12 @@
 import { Type } from 'class-transformer'
 import {
-  IsIn,
   IsDateString,
   IsInt,
-  IsMongoId,
   IsOptional,
   IsString,
   Max,
   Min,
 } from 'class-validator'
-
-import { ACTIVITY_TARGET } from '../activity.constants'
-import type { ActivityTarget } from '../activity.constants'
 
 export class ActivityLogQueryDto {
   @IsOptional()
@@ -29,15 +24,11 @@ export class ActivityLogQueryDto {
 
   @IsOptional()
   @IsString()
+  actorIds?: string
+
+  @IsOptional()
+  @IsString()
   actionTypes?: string
-
-  @IsOptional()
-  @IsMongoId()
-  actorId?: string
-
-  @IsOptional()
-  @IsIn(Object.values(ACTIVITY_TARGET))
-  targetType?: ActivityTarget
 
   @IsOptional()
   @IsDateString()
