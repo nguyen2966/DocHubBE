@@ -38,6 +38,8 @@ import {
   toObjectIds,
   toStringId,
 } from 'src/common/utils/mongo-id.util'
+import { ActivityService } from '../activity/activity.service'
+import { ACTIVITY_ACTION, ACTIVITY_TARGET } from '../activity/activity.constants'
 
 @Injectable()
 export class WorkspaceService implements OnModuleInit {
@@ -60,7 +62,8 @@ export class WorkspaceService implements OnModuleInit {
     @InjectModel(Document.name)
     private readonly documentModel: Model<Document>,
     @InjectModel(DocumentPermission.name)
-    private readonly documentPermissionModel: Model<DocumentPermission>
+    private readonly documentPermissionModel: Model<DocumentPermission>,
+    private readonly activityService: ActivityService,
   ) { }
 
   async onModuleInit() {
@@ -197,6 +200,15 @@ export class WorkspaceService implements OnModuleInit {
       joinedAt: new Date(),
     })
 
+    await this.activityService.recordSafe({
+      workspaceId: workspace._id as Types.ObjectId,
+      actorId: userId,
+      actionType: ACTIVITY_ACTION.WORKSPACE_CREATION,
+      targetType: ACTIVITY_TARGET.WORKSPACE,
+      targetId: workspace._id as Types.ObjectId,
+      metadata: { name: workspace.name },
+    })
+
     return workspace
   }
 
@@ -327,6 +339,15 @@ export class WorkspaceService implements OnModuleInit {
       .lean()
 
     if (!workspace) throw new NotFoundException('Workspace không tồn tại')
+    await this.activityService.recordSafe({
+      workspaceId,
+      actorId: userId,
+      actionType: ACTIVITY_ACTION.UPDATE_SETTINGS,
+      targetType: ACTIVITY_TARGET.WORKSPACE,
+      targetId: workspaceId,
+      metadata: { changes: dto },
+    })
+
     return workspace
   }
 
@@ -457,6 +478,15 @@ export class WorkspaceService implements OnModuleInit {
       );
     }
 
+    await this.activityService.recordSafe({
+      workspaceId,
+      actorId,
+      actionType: ACTIVITY_ACTION.CHANGE_USER_ROLE,
+      targetType: ACTIVITY_TARGET.MEMBER,
+      targetId: targetUserId,
+      metadata: { role: dto.role },
+    })
+
     return updated;
   }
 
@@ -495,6 +525,14 @@ export class WorkspaceService implements OnModuleInit {
       workspaceId: toObjectId(workspaceId),
       userId: toObjectId(targetUserId),
     });
+
+    await this.activityService.recordSafe({
+      workspaceId,
+      actorId,
+      actionType: ACTIVITY_ACTION.REMOVE_USER,
+      targetType: ACTIVITY_TARGET.MEMBER,
+      targetId: targetUserId,
+    })
   }
 
   /**
@@ -518,6 +556,15 @@ export class WorkspaceService implements OnModuleInit {
       { workspaceId: toObjectId(workspaceId), userId: toObjectId(userId) },
       { $set: this.softDeleteUpdate(userId) },
     )
+
+    await this.activityService.recordSafe({
+      workspaceId,
+      actorId: userId,
+      actionType: ACTIVITY_ACTION.REMOVE_USER,
+      targetType: ACTIVITY_TARGET.MEMBER,
+      targetId: userId,
+      metadata: { selfRemoved: true },
+    })
   }
 
   // ─── Invitations ──────────────────────────────────────────
@@ -624,6 +671,27 @@ export class WorkspaceService implements OnModuleInit {
           return { email, status: 'error' }
         }
       }),
+    )
+
+    await Promise.all(
+      results
+        .filter((result) => result.status === 'invited')
+        .map((result) => {
+          const invitedUser = userByEmail.get(result.email)
+
+          return this.activityService.recordSafe({
+            workspaceId,
+            actorId,
+            actionType: ACTIVITY_ACTION.INVITE_USER,
+            targetType: ACTIVITY_TARGET.MEMBER,
+            targetId: invitedUser?._id as Types.ObjectId | undefined,
+            metadata: {
+              email: result.email,
+              role: dto.role,
+              invitationId: result.invitationId,
+            },
+          })
+        }),
     )
 
     return results;

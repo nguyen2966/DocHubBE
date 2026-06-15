@@ -26,6 +26,8 @@ import {
   toObjectIds,
   toStringId,
 } from 'src/common/utils/mongo-id.util';
+import { ActivityService } from '../activity/activity.service';
+import { ACTIVITY_ACTION, ACTIVITY_TARGET } from '../activity/activity.constants';
 
 type SkipReason =
   | 'WORKSPACE_MEMBER'
@@ -55,6 +57,7 @@ export class ShareDocumentService {
     private readonly pendingShareModel: Model<PendingDocumentShare>,
 
     private readonly permissionService: PermissionsService,
+    private readonly activityService: ActivityService,
   ) { }
 
   private escapeRegex(value: string) {
@@ -511,6 +514,21 @@ export class ShareDocumentService {
       });
     }
 
+    if (granted.length || pending.length) {
+      await this.activityService.recordSafe({
+        workspaceId,
+        actorId: grantedBy,
+        actionType: ACTIVITY_ACTION.SHARE_DOCUMENT,
+        targetType: ACTIVITY_TARGET.DOCUMENT,
+        targetId: documentId,
+        metadata: {
+          role,
+          granted,
+          pending: pending.map(({ shareLink, ...share }) => share),
+        },
+      })
+    }
+
     return { granted, pending, skipped };
   }
 
@@ -518,6 +536,7 @@ export class ShareDocumentService {
     documentId: string,
     workspaceId: string,
     userId: string,
+    actorId: string,
     dto: UpdateDocumentRoleDto,
   ) {
     const documentObjectId = toObjectId(documentId);
@@ -569,10 +588,30 @@ export class ShareDocumentService {
     }
 
     perm.role = dto.role;
-    return perm.save();
+    const updated = await perm.save();
+
+    await this.activityService.recordSafe({
+      workspaceId,
+      actorId,
+      actionType: ACTIVITY_ACTION.SHARE_DOCUMENT,
+      targetType: ACTIVITY_TARGET.DOCUMENT,
+      targetId: documentId,
+      metadata: {
+        changeType: 'access_role_updated',
+        userId,
+        role: dto.role,
+      },
+    })
+
+    return updated;
   }
 
-  async removeAccess(documentId: string, workspaceId: string, userId: string) {
+  async removeAccess(
+    documentId: string,
+    workspaceId: string,
+    userId: string,
+    actorId: string,
+  ) {
     const documentObjectId = toObjectId(documentId);
     const workspaceObjectId = toObjectId(workspaceId);
     const userObjectId = toObjectId(userId);
@@ -622,6 +661,15 @@ export class ShareDocumentService {
       userId: userObjectId,
     });
 
+    await this.activityService.recordSafe({
+      workspaceId,
+      actorId,
+      actionType: ACTIVITY_ACTION.REVOKE_ACCESS,
+      targetType: ACTIVITY_TARGET.DOCUMENT,
+      targetId: documentId,
+      metadata: { userId },
+    })
+
     return { success: true };
   }
 
@@ -629,6 +677,7 @@ export class ShareDocumentService {
     documentId: string,
     workspaceId: string,
     shareId: string,
+    actorId: string,
     dto: UpdatePendingShareRoleDto,
   ) {
     const pendingShare = await this.pendingShareModel.findOne({
@@ -645,6 +694,21 @@ export class ShareDocumentService {
     pendingShare.role = dto.role;
     await pendingShare.save();
 
+    await this.activityService.recordSafe({
+      workspaceId,
+      actorId,
+      actionType: ACTIVITY_ACTION.SHARE_DOCUMENT,
+      targetType: ACTIVITY_TARGET.DOCUMENT,
+      targetId: documentId,
+      metadata: {
+        changeType: 'access_role_updated',
+        pending: true,
+        shareId,
+        email: pendingShare.email,
+        role: dto.role,
+      },
+    })
+
     return {
       shareId: toStringId(pendingShare),
       email: pendingShare.email,
@@ -657,6 +721,7 @@ export class ShareDocumentService {
     documentId: string,
     workspaceId: string,
     shareId: string,
+    actorId: string,
   ) {
     const pendingShare = await this.pendingShareModel.findOne({
       _id: toObjectId(shareId),
@@ -671,6 +736,19 @@ export class ShareDocumentService {
 
     pendingShare.status = 'revoked';
     await pendingShare.save();
+
+    await this.activityService.recordSafe({
+      workspaceId,
+      actorId,
+      actionType: ACTIVITY_ACTION.REVOKE_ACCESS,
+      targetType: ACTIVITY_TARGET.DOCUMENT,
+      targetId: documentId,
+      metadata: {
+        pending: true,
+        shareId,
+        email: pendingShare.email,
+      },
+    })
 
     return { success: true };
   }

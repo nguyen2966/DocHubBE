@@ -9,6 +9,7 @@ import { StorageModule } from 'src/modules-system/storage/storage.module';
 import { UploadJobService } from './upload-job.service';
 import { WebsocketModule } from 'src/modules-system/websocket/websocket.module';
 import { ProgressGateway } from 'src/modules-system/websocket/progress.gateway';
+import { ActivityModule } from '../activity/activity.module';
 
 @Module({
   imports:[
@@ -18,7 +19,8 @@ import { ProgressGateway } from 'src/modules-system/websocket/progress.gateway';
     }),
     PermissionsModule,
     StorageModule,
-    WebsocketModule
+    WebsocketModule,
+    ActivityModule,
   ],
   controllers: [DocumentController],
   providers: [DocumentService,

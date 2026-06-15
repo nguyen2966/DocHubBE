@@ -1,34 +1,30 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
-import { ActivityService } from './activity.service';
-import { CreateActivityDto } from './dto/create-activity.dto';
-import { UpdateActivityDto } from './dto/update-activity.dto';
+import {
+  Controller,
+  Get,
+  Param,
+  Query,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common'
 
-@Controller('activity')
+import { PaginationResponseInterceptor } from 'src/common/interceptors/paginated.interceptor'
+import { RequireWorkspacePermission } from 'src/modules-system/permissions/decorators/require-workspace-permission.decorator'
+import { WorkspacePermissionGuard } from 'src/modules-system/permissions/guards/workspace-permission.guard'
+import { ActivityService } from './activity.service'
+import { ActivityLogQueryDto } from './dto/activity-log-query.dto'
+
+@Controller('workspaces/:workspaceId/activity-logs')
 export class ActivityController {
   constructor(private readonly activityService: ActivityService) {}
 
-  @Post()
-  create(@Body() createActivityDto: CreateActivityDto) {
-    return this.activityService.create(createActivityDto);
-  }
-
   @Get()
-  findAll() {
-    return this.activityService.findAll();
-  }
-
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.activityService.findOne(+id);
-  }
-
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateActivityDto: UpdateActivityDto) {
-    return this.activityService.update(+id, updateActivityDto);
-  }
-
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.activityService.remove(+id);
+  @UseGuards(WorkspacePermissionGuard)
+  @RequireWorkspacePermission('workspace:view_activity_log')
+  @UseInterceptors(PaginationResponseInterceptor)
+  findByWorkspace(
+    @Param('workspaceId') workspaceId: string,
+    @Query() query: ActivityLogQueryDto,
+  ) {
+    return this.activityService.findByWorkspace(workspaceId, query)
   }
 }

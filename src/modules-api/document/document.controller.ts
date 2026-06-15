@@ -113,9 +113,10 @@ export class DocumentController {
   editPdf(
     @Param('documentId') documentId: string,
     @UploadedFile() file: Express.Multer.File,
+    @Req() req: any,
   ) {
     if (!file) throw new BadRequestException('File is required');
-    return this.documentService.editPdf(documentId, file.buffer);
+    return this.documentService.editPdf(documentId, file.buffer, req.user._id.toString());
   }
 
   // Lấy danh sách
@@ -181,16 +182,17 @@ export class DocumentController {
     @Param('workspaceId') workspaceId: string,
     @Param('documentId') documentId: string,
     @Body() body: RenameDocumentDto,
+    @Req() req: any,
   ) {
-    return this.documentService.rename(documentId, workspaceId, body)
+    return this.documentService.rename(documentId, workspaceId, req.user._id.toString(), body)
   }
 
   // Xóa document
   @Delete(':documentId')
   @UseGuards(DocumentPermissionGuard)
   @RequireDocumentPermissions('document:delete')
-  remove(@Param('documentId') documentId: string) {
-    return this.documentService.delete(documentId)
+  remove(@Param('documentId') documentId: string, @Req() req: any) {
+    return this.documentService.delete(documentId, req.user._id.toString())
   }
 
   

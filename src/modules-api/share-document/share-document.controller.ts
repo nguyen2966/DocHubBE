@@ -72,11 +72,13 @@ export class ShareDocumentController {
     @Param('workspaceId') workspaceId: string,
     @Param('userId') userId: string,
     @Body() dto: UpdateDocumentRoleDto,
+    @Req() req: any,
   ) {
     return this.shareDocumentService.updateRole(
       documentId,
       workspaceId,
       userId,
+      req.user._id.toString(),
       dto,
     );
   }
@@ -89,11 +91,13 @@ export class ShareDocumentController {
     @Param('workspaceId') workspaceId: string,
     @Param('documentId') documentId: string,
     @Param('userId') userId: string,
+    @Req() req: any,
   ) {
     return this.shareDocumentService.removeAccess(
       documentId,
       workspaceId,
       userId,
+      req.user._id.toString(),
     );
   }
 
@@ -103,11 +107,13 @@ export class ShareDocumentController {
     @Param('documentId') documentId: string,
     @Param('shareId') shareId: string,
     @Body() dto: UpdatePendingShareRoleDto,
+    @Req() req: any,
   ) {
     return this.shareDocumentService.updatePendingShareRole(
       documentId,
       workspaceId,
       shareId,
+      req.user._id.toString(),
       dto,
     );
   }
@@ -117,11 +123,13 @@ export class ShareDocumentController {
     @Param('workspaceId') workspaceId: string,
     @Param('documentId') documentId: string,
     @Param('shareId') shareId: string,
+    @Req() req: any,
   ) {
     return this.shareDocumentService.removePendingShare(
       documentId,
       workspaceId,
       shareId,
+      req.user._id.toString(),
     );
   }
 }
