@@ -21,6 +21,11 @@ import { Document } from 'src/modules-system/mongodb/schemas/document';
 import { Workspace } from 'src/modules-system/mongodb/schemas/workspace';
 import { PendingDocumentShare } from 'src/modules-system/mongodb/schemas/pending-document-invitation';
 import { PermissionsService } from 'src/modules-system/permissions/permissions.service';
+import {
+  toObjectId,
+  toObjectIds,
+  toStringId,
+} from 'src/common/utils/mongo-id.util';
 
 type SkipReason =
   | 'WORKSPACE_MEMBER'
@@ -56,10 +61,6 @@ export class ShareDocumentService {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
-  private toId(value: any): string {
-    return value?._id?.toString?.() ?? value?.toString?.() ?? '';
-  }
-
   private normalizeEmail(email: string) {
     return email.trim().toLowerCase();
   }
@@ -80,8 +81,10 @@ export class ShareDocumentService {
   }
 
   async getDocumentAccess(documentId: string, workspaceId: string) {
+    const documentObjectId = toObjectId(documentId);
+    const workspaceObjectId = toObjectId(workspaceId);
     const document = await this.documentModel
-      .findOne({ _id: documentId, workspaceId })
+      .findOne({ _id: documentObjectId, workspaceId: workspaceObjectId })
       .populate<{ ownerId: Pick<User, '_id' | 'fullName' | 'email'> }>(
         'ownerId',
         'fullName email avatarUrl',
@@ -93,20 +96,20 @@ export class ShareDocumentService {
     }
 
     const ownerUser = (document as any).ownerId;
-    const ownerId = this.toId(ownerUser);
+    const ownerId = toStringId(ownerUser);
 
     const [workspace, memberCount, allExplicitPerms, pendingShares] =
       await Promise.all([
-        this.workspaceModel.findById(workspaceId).select('name').lean(),
+        this.workspaceModel.findById(workspaceObjectId).select('name').lean(),
 
         this.memberModel.countDocuments({
-          workspaceId: new Types.ObjectId(workspaceId),
+          workspaceId: workspaceObjectId,
           isDeleted: { $ne: true },
         }),
 
         this.documentPermissionModel
           .find({
-            documentId,
+            documentId: documentObjectId,
             role: { $ne: 'owner' },
           })
           .populate<{ userId: Pick<User, '_id' | 'fullName' | 'email'> }>(
@@ -117,8 +120,8 @@ export class ShareDocumentService {
 
         this.pendingShareModel
           .find({
-            documentId: new Types.ObjectId(documentId),
-            workspaceId: new Types.ObjectId(workspaceId),
+            documentId: documentObjectId,
+            workspaceId: workspaceObjectId,
             status: 'pending',
           })
           .sort({ createdAt: -1 })
@@ -126,15 +129,15 @@ export class ShareDocumentService {
       ]);
 
     const explicitUserIds = allExplicitPerms.map((p) =>
-      this.toId((p as any).userId),
-    );
+      toStringId((p as any).userId),
+    ).filter(Boolean);
 
     const workspaceMembersWithExplicitPerm = explicitUserIds.length
       ? await this.memberModel
         .find({
-          workspaceId: new Types.ObjectId(workspaceId),
+          workspaceId: workspaceObjectId,
           userId: {
-            $in: explicitUserIds.map((id) => new Types.ObjectId(id)),
+            $in: toObjectIds(explicitUserIds),
           },
           isDeleted: { $ne: true },
         })
@@ -143,11 +146,14 @@ export class ShareDocumentService {
       : [];
 
     const workspaceMemberSet = new Set(
-      workspaceMembersWithExplicitPerm.map((m) => this.toId((m as any).userId)),
+      workspaceMembersWithExplicitPerm.map((m) => toStringId((m as any).userId)),
     );
 
     const externalPerms = allExplicitPerms.filter((p) => {
-      const userId = this.toId((p as any).userId);
+      const user = (p as any).userId;
+      if (!user) return false;
+
+      const userId = toStringId(user);
       return userId !== ownerId && !workspaceMemberSet.has(userId);
     });
 
@@ -172,18 +178,18 @@ export class ShareDocumentService {
         const user = (p as any).userId;
 
         return {
-          userId: this.toId(user),
+          userId: toStringId(user),
           fullName: user.fullName,
           email: user.email,
           avatarUrl: user.avatarUrl ?? null,
           role: (p as any).role,
-          permissionId: this.toId((p as any)._id),
+          permissionId: toStringId((p as any)._id),
           createdAt: (p as any).createdAt?.toISOString?.() ?? null,
         };
       }),
 
       pendingUsers: pendingShares.map((share) => ({
-        shareId: this.toId((share as any)._id),
+        shareId: toStringId((share as any)._id),
         email: (share as any).email,
         role: (share as any).role,
         createdAt: (share as any).createdAt?.toISOString?.() ?? null,
@@ -196,6 +202,8 @@ export class ShareDocumentService {
     workspaceId: string,
     email: string,
   ) {
+    const documentObjectId = toObjectId(documentId);
+    const workspaceObjectId = toObjectId(workspaceId);
     const keyword = email?.trim();
 
     if (!keyword || keyword.length < 2) {
@@ -203,7 +211,7 @@ export class ShareDocumentService {
     }
 
     const document = await this.documentModel
-      .findOne({ _id: documentId, workspaceId })
+      .findOne({ _id: documentObjectId, workspaceId: workspaceObjectId })
       .select('_id ownerId')
       .lean();
 
@@ -211,7 +219,7 @@ export class ShareDocumentService {
       throw new NotFoundException('Document not found');
     }
 
-    const ownerId = this.toId((document as any).ownerId);
+    const ownerId = toStringId((document as any).ownerId);
     const normalizedEmail = this.normalizeEmail(keyword);
     const escapedKeyword = this.escapeRegex(normalizedEmail);
 
@@ -249,7 +257,7 @@ export class ShareDocumentService {
     const [workspaceMembers, docPermissions] = await Promise.all([
       this.memberModel
         .find({
-          workspaceId: new Types.ObjectId(workspaceId),
+          workspaceId: workspaceObjectId,
           userId: { $in: userIds },
           isDeleted: false,
         })
@@ -257,26 +265,26 @@ export class ShareDocumentService {
 
       this.documentPermissionModel
         .find({
-          documentId,
-          userId: { $in: userIds.map((id) => id.toString()) },
+          documentId: documentObjectId,
+          userId: { $in: toObjectIds(userIds as Types.ObjectId[]) },
         })
         .lean(),
     ]);
 
     const workspaceMemberSet = new Set(
-      workspaceMembers.map((m) => this.toId((m as any).userId)),
+      workspaceMembers.map((m) => toStringId((m as any).userId)),
     );
 
     const permissionMap = new Map(
       docPermissions.map((p) => [
-        this.toId((p as any).userId),
+        toStringId((p as any).userId),
         (p as any).role,
       ]),
     );
 
     const results = await Promise.all(
       users.map(async (user) => {
-        const userId = this.toId((user as any)._id);
+        const userId = toStringId((user as any)._id);
 
         const isOwner = userId === ownerId;
         const isWorkspaceMember = workspaceMemberSet.has(userId);
@@ -334,11 +342,14 @@ export class ShareDocumentService {
     grantedBy: string,
     dto: ShareDocumentDto,
   ) {
+    const documentObjectId = toObjectId(documentId);
+    const workspaceObjectId = toObjectId(workspaceId);
+    const grantedByObjectId = toObjectId(grantedBy);
     const emails = [...new Set(dto.emails.map((e) => this.normalizeEmail(e)))];
     const { role } = dto;
 
     const document = await this.documentModel
-      .findOne({ _id: documentId, workspaceId })
+      .findOne({ _id: documentObjectId, workspaceId: workspaceObjectId })
       .select('_id ownerId title')
       .lean();
 
@@ -346,7 +357,7 @@ export class ShareDocumentService {
       throw new NotFoundException('Document not found');
     }
 
-    const ownerId = this.toId((document as any).ownerId);
+    const ownerId = toStringId((document as any).ownerId);
 
     const users = await this.userModel
       .find({ email: { $in: emails } })
@@ -357,14 +368,14 @@ export class ShareDocumentService {
       users.map((u) => [this.normalizeEmail((u as any).email), u]),
     );
 
-    const registeredUserIds = users.map((u) => new Types.ObjectId(this.toId(u)));
+    const registeredUserIds = users.map((u) => toObjectId(toStringId(u)));
 
     const [workspaceMembers, existingPermissions, existingPendingShares] =
       await Promise.all([
         registeredUserIds.length
           ? this.memberModel
             .find({
-              workspaceId: new Types.ObjectId(workspaceId),
+              workspaceId: workspaceObjectId,
               userId: { $in: registeredUserIds },
               isDeleted: false,
             })
@@ -374,16 +385,16 @@ export class ShareDocumentService {
         registeredUserIds.length
           ? this.documentPermissionModel
             .find({
-              documentId,
-              userId: { $in: registeredUserIds.map((id) => id.toString()) },
+              documentId: documentObjectId,
+              userId: { $in: registeredUserIds },
             })
             .lean()
           : [],
 
         this.pendingShareModel
           .find({
-            documentId: new Types.ObjectId(documentId),
-            workspaceId: new Types.ObjectId(workspaceId),
+            documentId: documentObjectId,
+            workspaceId: workspaceObjectId,
             email: { $in: emails },
             status: 'pending',
           })
@@ -391,12 +402,12 @@ export class ShareDocumentService {
       ]);
 
     const workspaceMemberSet = new Set(
-      workspaceMembers.map((m) => this.toId((m as any).userId)),
+      workspaceMembers.map((m) => toStringId((m as any).userId)),
     );
 
     const existingRoleMap = new Map<string, string | 'owner'>(
       existingPermissions.map((p) => [
-        this.toId((p as any).userId),
+        toStringId((p as any).userId),
         (p as any).role,
       ] as [string, string | 'owner']),
     );
@@ -418,7 +429,8 @@ export class ShareDocumentService {
       const user = userByEmail.get(email);
 
       if (user) {
-        const userId = this.toId(user);
+        const userId = toStringId(user);
+        const userObjectId = toObjectId(userId);
 
         if (userId === ownerId) {
           skipped.push({ email, reason: 'OWNER' });
@@ -443,12 +455,12 @@ export class ShareDocumentService {
         }
 
         await this.documentPermissionModel.findOneAndUpdate(
-          { documentId, userId },
+          { documentId: documentObjectId, userId: userObjectId },
           {
-            documentId,
-            userId,
+            documentId: documentObjectId,
+            userId: userObjectId,
             role,
-            grantedBy,
+            grantedBy: grantedByObjectId,
           },
           {
             upsert: true,
@@ -470,7 +482,7 @@ export class ShareDocumentService {
 
       if (existingPending) {
         pending.push({
-          shareId: this.toId((existingPending as any)._id),
+          shareId: toStringId((existingPending as any)._id),
           email,
           role: (existingPending as any).role,
           shareLink: this.createShareLink((existingPending as any).token),
@@ -481,18 +493,18 @@ export class ShareDocumentService {
       const token = this.createShareToken();
 
       const created = await this.pendingShareModel.create({
-        documentId: new Types.ObjectId(documentId),
-        workspaceId: new Types.ObjectId(workspaceId),
+        documentId: documentObjectId,
+        workspaceId: workspaceObjectId,
         email,
         role,
         token,
         status: 'pending',
-        createdBy: new Types.ObjectId(grantedBy),
+        createdBy: grantedByObjectId,
         expiresAt: this.createExpiryDate(),
       });
 
       pending.push({
-        shareId: this.toId(created),
+        shareId: toStringId(created),
         email,
         role,
         shareLink: this.createShareLink(token),
@@ -508,8 +520,11 @@ export class ShareDocumentService {
     userId: string,
     dto: UpdateDocumentRoleDto,
   ) {
+    const documentObjectId = toObjectId(documentId);
+    const workspaceObjectId = toObjectId(workspaceId);
+    const userObjectId = toObjectId(userId);
     const document = await this.documentModel
-      .findOne({ _id: documentId, workspaceId })
+      .findOne({ _id: documentObjectId, workspaceId: workspaceObjectId })
       .select('_id ownerId')
       .lean();
 
@@ -517,18 +532,21 @@ export class ShareDocumentService {
       throw new NotFoundException('Document not found');
     }
 
-    const ownerId = this.toId((document as any).ownerId);
+    const ownerId = toStringId((document as any).ownerId);
 
     if (userId === ownerId) {
       throw new ConflictException('Cannot change role of document owner');
     }
 
     const [perm, workspaceMember] = await Promise.all([
-      this.documentPermissionModel.findOne({ documentId, userId }),
+      this.documentPermissionModel.findOne({
+        documentId: documentObjectId,
+        userId: userObjectId,
+      }),
       this.memberModel
         .findOne({
-          workspaceId: new Types.ObjectId(workspaceId),
-          userId: new Types.ObjectId(userId),
+          workspaceId: workspaceObjectId,
+          userId: userObjectId,
           isDeleted: false,
         })
         .lean(),
@@ -555,8 +573,11 @@ export class ShareDocumentService {
   }
 
   async removeAccess(documentId: string, workspaceId: string, userId: string) {
+    const documentObjectId = toObjectId(documentId);
+    const workspaceObjectId = toObjectId(workspaceId);
+    const userObjectId = toObjectId(userId);
     const document = await this.documentModel
-      .findOne({ _id: documentId, workspaceId })
+      .findOne({ _id: documentObjectId, workspaceId: workspaceObjectId })
       .select('_id ownerId')
       .lean();
 
@@ -564,18 +585,21 @@ export class ShareDocumentService {
       throw new NotFoundException('Document not found');
     }
 
-    const ownerId = this.toId((document as any).ownerId);
+    const ownerId = toStringId((document as any).ownerId);
 
     if (userId === ownerId) {
       throw new ConflictException('Cannot remove document owner');
     }
 
     const [perm, workspaceMember] = await Promise.all([
-      this.documentPermissionModel.findOne({ documentId, userId }),
+      this.documentPermissionModel.findOne({
+        documentId: documentObjectId,
+        userId: userObjectId,
+      }),
       this.memberModel
         .findOne({
-          workspaceId: new Types.ObjectId(workspaceId),
-          userId: new Types.ObjectId(userId),
+          workspaceId: workspaceObjectId,
+          userId: userObjectId,
           isDeleted: false,
         })
         .lean(),
@@ -593,7 +617,10 @@ export class ShareDocumentService {
       throw new ConflictException('Cannot remove document owner');
     }
 
-    await this.documentPermissionModel.deleteOne({ documentId, userId });
+    await this.documentPermissionModel.deleteOne({
+      documentId: documentObjectId,
+      userId: userObjectId,
+    });
 
     return { success: true };
   }
@@ -605,9 +632,9 @@ export class ShareDocumentService {
     dto: UpdatePendingShareRoleDto,
   ) {
     const pendingShare = await this.pendingShareModel.findOne({
-      _id: shareId,
-      documentId: new Types.ObjectId(documentId),
-      workspaceId: new Types.ObjectId(workspaceId),
+      _id: toObjectId(shareId),
+      documentId: toObjectId(documentId),
+      workspaceId: toObjectId(workspaceId),
       status: 'pending',
     });
 
@@ -619,7 +646,7 @@ export class ShareDocumentService {
     await pendingShare.save();
 
     return {
-      shareId: this.toId(pendingShare),
+      shareId: toStringId(pendingShare),
       email: pendingShare.email,
       role: pendingShare.role,
       createdAt: (pendingShare as any).createdAt?.toISOString?.() ?? null,
@@ -632,9 +659,9 @@ export class ShareDocumentService {
     shareId: string,
   ) {
     const pendingShare = await this.pendingShareModel.findOne({
-      _id: shareId,
-      documentId: new Types.ObjectId(documentId),
-      workspaceId: new Types.ObjectId(workspaceId),
+      _id: toObjectId(shareId),
+      documentId: toObjectId(documentId),
+      workspaceId: toObjectId(workspaceId),
       status: 'pending',
     });
 
@@ -680,6 +707,7 @@ export class ShareDocumentService {
   }
 
   async acceptShareToken(token: string, userId: string) {
+    const userObjectId = toObjectId(userId);
     const share = await this.pendingShareModel.findOne({ token });
 
     if (!share) {
@@ -697,7 +725,7 @@ export class ShareDocumentService {
     }
 
     const user = await this.userModel
-      .findById(userId)
+      .findById(userObjectId)
       .select('_id email')
       .lean();
 
@@ -725,7 +753,7 @@ export class ShareDocumentService {
       throw new NotFoundException('Document not found');
     }
 
-    const ownerId = this.toId((document as any).ownerId);
+    const ownerId = toStringId((document as any).ownerId);
 
     if (ownerId === userId) {
       throw new ConflictException('Document owner cannot accept share');
@@ -734,33 +762,33 @@ export class ShareDocumentService {
     const workspaceMember = await this.memberModel
       .findOne({
         workspaceId: share.workspaceId,
-        userId: new Types.ObjectId(userId),
+        userId: userObjectId,
         isDeleted: false,
       })
       .lean();
 
     if (workspaceMember) {
       share.status = 'accepted';
-      share.acceptedBy = new Types.ObjectId(userId);
+      share.acceptedBy = userObjectId;
       share.acceptedAt = new Date();
       await share.save();
 
       return {
-        workspaceId: this.toId(share.workspaceId),
-        documentId: this.toId(share.documentId),
+        workspaceId: toStringId(share.workspaceId),
+        documentId: toStringId(share.documentId),
       };
     }
 
     await this.documentPermissionModel.findOneAndUpdate(
       {
-        documentId: this.toId(share.documentId),
-        userId,
+        documentId: share.documentId,
+        userId: userObjectId,
       },
       {
-        documentId: this.toId(share.documentId),
-        userId,
+        documentId: share.documentId,
+        userId: userObjectId,
         role: share.role,
-        grantedBy: this.toId(share.createdBy),
+        grantedBy: share.createdBy,
       },
       {
         upsert: true,
@@ -770,13 +798,13 @@ export class ShareDocumentService {
     );
 
     share.status = 'accepted';
-    share.acceptedBy = new Types.ObjectId(userId);
+    share.acceptedBy = userObjectId;
     share.acceptedAt = new Date();
     await share.save();
 
     return {
-      workspaceId: this.toId(share.workspaceId),
-      documentId: this.toId(share.documentId),
+      workspaceId: toStringId(share.workspaceId),
+      documentId: toStringId(share.documentId),
     };
   }
 }

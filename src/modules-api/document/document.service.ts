@@ -1,7 +1,7 @@
 // src/modules-api/document/document.service.ts
 import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { CreateDocumentDto } from './dto/create-document.dto';
 import { ShareDocumentDto } from './dto/share-document.dto';
 import { WorkspaceMember } from 'src/modules-system/mongodb/schemas/workspace-member';
@@ -12,6 +12,7 @@ import { StorageContract } from 'src/modules-system/storage/storage.contract';
 import { buildDocumentKey } from 'src/modules-system/storage/storage-key.util';
 import { UploadJobService } from './upload-job.service';
 import { UploadJob } from 'src/modules-system/mongodb/schemas/upload-job';
+import { toObjectId, toStringId } from 'src/common/utils/mongo-id.util';
 
 
 
@@ -42,22 +43,24 @@ export class DocumentService {
 
 
   async createMarkdown(workspaceId: string, ownerId: string, dto: CreateDocumentDto) {
-    const title = await this.resolveTitle(workspaceId, dto.title);
+    const workspaceObjectId = toObjectId(workspaceId);
+    const ownerObjectId = toObjectId(ownerId);
+    const title = await this.resolveTitle(workspaceObjectId, dto.title);
 
     const doc = await this.documentModel.create({
-      workspaceId,
-      ownerId,
+      workspaceId: workspaceObjectId,
+      ownerId: ownerObjectId,
       title,
       sourceType: 'md_editor',
       markdownContent: dto.markdownContent,
       processingStatus: 'processing',
     });
 
-    await this.assignOwner(doc._id, ownerId);
+    await this.assignOwner(toObjectId(doc._id), ownerObjectId);
 
     // Enqueue markdown → PDF conversion
     await this.documentQueue.add('convert-markdown', {
-      documentId: doc._id.toString(),
+      documentId: toStringId(doc._id),
       markdownContent: dto.markdownContent,
       workspaceId,
     });
@@ -85,11 +88,13 @@ export class DocumentService {
       return { jobId, cancelled: true }
     }
 
-    const title = await this.resolveTitle(workspaceId, titleInput)
+    const workspaceObjectId = toObjectId(workspaceId)
+    const ownerObjectId = toObjectId(ownerId)
+    const title = await this.resolveTitle(workspaceObjectId, titleInput)
 
     const doc = await this.documentModel.create({
-      workspaceId,
-      ownerId,
+      workspaceId: workspaceObjectId,
+      ownerId: ownerObjectId,
       title,
       sourceType: 'file_upload',
       fileSize: file.size,
@@ -97,7 +102,7 @@ export class DocumentService {
     })
 
     await this.uploadJobService.update(jobId, {
-      documentId: doc._id.toString(),
+      documentId: toStringId(doc._id),
     })
 
     if (await this.isUploadCancelled(jobId)) {
@@ -105,7 +110,7 @@ export class DocumentService {
       return { jobId, cancelled: true }
     }
 
-    const key = buildDocumentKey(workspaceId, doc._id.toString())
+    const key = buildDocumentKey(workspaceId, toStringId(doc._id))
 
     const { publicUrl } = await this.storage.upload(
       key,
@@ -123,7 +128,7 @@ export class DocumentService {
     await this.uploadJobService.update(jobId, {
       status: 'EXTRACTING',
       progress: 66,
-      documentId: doc._id.toString(),
+      documentId: toStringId(doc._id),
     })
 
     await this.documentModel.findByIdAndUpdate(doc._id, {
@@ -138,7 +143,7 @@ export class DocumentService {
       return { jobId, cancelled: true }
     }
 
-    await this.assignOwner(doc._id, ownerId)
+    await this.assignOwner(toObjectId(doc._id), ownerObjectId)
 
     if (await this.isUploadCancelled(jobId)) {
       await this.storage.delete(key).catch(() => { })
@@ -148,7 +153,7 @@ export class DocumentService {
     }
 
     await this.documentQueue.add('extract-pdf', {
-      documentId: doc._id.toString(),
+      documentId: toStringId(doc._id),
       storageKey: key,
       jobId,
     })
@@ -164,7 +169,6 @@ export class DocumentService {
   async cancelUpload(jobId: string, workspaceId: string, userId: string) {
     const job = await this.uploadJobModel.findOne({ jobId, workspaceId });
     if (!job) throw new NotFoundException('Job not found');
-    console.log(job.status);
     // Idempotent — không làm gì nếu đã xong/thất bại
     if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(job.status)) return { cancelled: false };
 
@@ -177,7 +181,8 @@ export class DocumentService {
 
     // Cleanup tùy theo đã đến phase nào
     if (job.documentId) {
-      const doc = await this.documentModel.findById(job.documentId).lean();
+      const documentObjectId = toObjectId(job.documentId)
+      const doc = await this.documentModel.findById(documentObjectId).lean();
 
       if (doc?.pdfStorageKey) {
         // Xóa file khỏi storage (fire-and-forget, không throw nếu lỗi)
@@ -185,8 +190,8 @@ export class DocumentService {
       }
 
       // Xóa document record và permission
-      await this.documentModel.findByIdAndDelete(job.documentId);
-      await this.documentPermissionModel.deleteMany({ documentId: job.documentId });
+      await this.documentModel.findByIdAndDelete(documentObjectId);
+      await this.documentPermissionModel.deleteMany({ documentId: documentObjectId });
     }
 
     // Thử remove khỏi BullMQ queue nếu job chưa được worker nhận
@@ -202,7 +207,8 @@ export class DocumentService {
   // ─── Flow 3: Edit PDF (Apryse export → overwrite) ─────────────────────────
 
   async editPdf(documentId: string, fileBuffer: Buffer) {
-    const doc = await this.documentModel.findById(documentId).lean();
+    const documentObjectId = toObjectId(documentId)
+    const doc = await this.documentModel.findById(documentObjectId).lean();
     if (!doc) throw new NotFoundException('Document not found');
 
     // Overwrite the file at the existing storage key
@@ -217,13 +223,13 @@ export class DocumentService {
     // updatedAt is handled by the worker once extraction completes;
     // mark it immediately so the UI shows the document is being processed
     return this.documentModel.findByIdAndUpdate(
-      documentId,
+      documentObjectId,
       { processingStatus: 'processing', updatedAt: new Date() },
       { new: true },
     );
   }
 
-  private async assignOwner(documentId: any, userId: string) {
+  private async assignOwner(documentId: Types.ObjectId, userId: Types.ObjectId) {
     await this.documentPermissionModel.create({
       documentId,
       userId,
@@ -233,8 +239,9 @@ export class DocumentService {
   }
 
   async findById(documentId: string) {
+    const documentObjectId = toObjectId(documentId)
     const doc = await this.documentModel
-      .findById(documentId)
+      .findById(documentObjectId)
       .populate('ownerId', 'fullName')
       .lean();
 
@@ -250,7 +257,7 @@ export class DocumentService {
 
   async findByWorkspace(workspaceId: string) {
     return this.documentModel
-      .find({ workspaceId })
+      .find({ workspaceId: toObjectId(workspaceId) })
       .populate('ownerId', 'fullName')
       .sort({ updatedAt: -1 })
       .lean();
@@ -258,27 +265,41 @@ export class DocumentService {
 
   async rename(documentId: string, workspaceId: string, body: RenameDocumentDto) {
     const { title } = body;
-    const resolved = await this.resolveTitle(workspaceId, title, documentId)
+    const documentObjectId = toObjectId(documentId)
+    const resolved = await this.resolveTitle(
+      toObjectId(workspaceId),
+      title,
+      documentObjectId,
+    )
     return this.documentModel.findByIdAndUpdate(
-      documentId,
+      documentObjectId,
       { title: resolved },
       { new: true },
     )
   }
 
   async delete(documentId: string) {
-    await this.documentModel.findByIdAndDelete(documentId)
-    // Annotations và comments được xử lý bởi cascade hoặc scheduled job
+    const documentObjectId = toObjectId(documentId)
+    // TODO: add pending-share/annotation/comment cleanup when those modules
+    // own persistence and transaction boundaries.
+    await Promise.all([
+      this.documentModel.findByIdAndDelete(documentObjectId),
+      this.documentPermissionModel.deleteMany({ documentId: documentObjectId }),
+    ])
   }
 
   async getMembers(documentId: string) {
     return this.documentPermissionModel
-      .find({ documentId })
+      .find({ documentId: toObjectId(documentId) })
       .populate('userId', 'name email avatar')
       .lean();
   }
 
-  private async resolveTitle(workspaceId: string, title: string, excludeId?: string) {
+  private async resolveTitle(
+    workspaceId: Types.ObjectId,
+    title: string,
+    excludeId?: Types.ObjectId,
+  ) {
     let candidate = title
     let suffix = 0
 

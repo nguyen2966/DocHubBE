@@ -2,8 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { DocumentPermission } from 'src/modules-system/mongodb/schemas/document-permission';
 import { Model } from 'mongoose';
-import { Types } from 'mongoose';
 import { NotFoundException, ForbiddenException } from '@nestjs/common';
+import { toObjectId, toStringId } from 'src/common/utils/mongo-id.util';
 
 @Injectable()
 export class MySharedDocumentsService {
@@ -17,7 +17,7 @@ export class MySharedDocumentsService {
 
   async getSharedWithMeDocuments(userId: string) {
     const permissions = await this.documentPermissionModel.find({
-      userId: userId,
+      userId: toObjectId(userId),
       role: { $in: ['viewer', 'commenter', 'editor'] },
     })
       .populate({
@@ -45,8 +45,8 @@ export class MySharedDocumentsService {
         const owner = document.ownerId;
 
         return {
-          _id: document._id.toString(),
-          workspaceId: workspace?._id?.toString?.() ?? document.workspaceId?.toString?.(),
+          _id: toStringId(document._id),
+          workspaceId: toStringId(workspace?._id ?? document.workspaceId),
           workspaceName: workspace?.name ?? '',
           title: document.title,
           sourceType: document.sourceType,
@@ -55,7 +55,7 @@ export class MySharedDocumentsService {
           role: permission.role,
           owner: owner
             ? {
-              _id: owner._id.toString(),
+              _id: toStringId(owner._id),
               fullName: owner.fullName,
               email: owner.email,
               avatarUrl: owner.avatarUrl ?? null,
@@ -71,8 +71,8 @@ export class MySharedDocumentsService {
   async getSharedWithMeDocumentDetail(userId: string, documentId: string) {
     const permission = await this.documentPermissionModel
       .findOne({
-        userId: userId,
-        documentId: documentId,
+        userId: toObjectId(userId),
+        documentId: toObjectId(documentId),
         role: { $in: ['viewer', 'commenter', 'editor'] },
       })
       .populate({
@@ -106,9 +106,8 @@ export class MySharedDocumentsService {
     const owner = document.ownerId;
 
     return {
-      _id: document._id.toString(),
-      workspaceId:
-        workspace?._id?.toString?.() ?? document.workspaceId?.toString?.(),
+      _id: toStringId(document._id),
+      workspaceId: toStringId(workspace?._id ?? document.workspaceId),
       workspaceName: workspace?.name ?? '',
 
       title: document.title,
@@ -116,7 +115,7 @@ export class MySharedDocumentsService {
 
       ownerId: owner
         ? {
-          _id: owner._id.toString(),
+          _id: toStringId(owner._id),
           fullName: owner.fullName,
           email: owner.email,
           avatarUrl: owner.avatarUrl ?? null,
