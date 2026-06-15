@@ -10,21 +10,28 @@ import {
   UseGuards,
   Req,
 } from '@nestjs/common';
+import { ApiParam } from '@nestjs/swagger';
+
 import { WorkspacePermissionGuard } from '../../modules-system/permissions/guards/workspace-permission.guard';
 import { DocumentPermissionGuard } from '../../modules-system/permissions/guards/document-permission.guard';
 import { RequireDocumentPermissions } from 'src/modules-system/permissions/decorators/require-document-permission.decorator';
-import { ShareDocumentDto, UpdateDocumentRoleDto } from './dto/share-document.dto';
+
+import {
+  ShareDocumentDto,
+  UpdateDocumentRoleDto,
+  UpdatePendingShareRoleDto,
+} from './dto/share-document.dto';
+
 import { ShareDocumentService } from './share-document.service';
-import { ApiParam } from '@nestjs/swagger';
 
 @Controller('workspaces/:workspaceId/documents/:documentId')
 @UseGuards(WorkspacePermissionGuard, DocumentPermissionGuard)
 @RequireDocumentPermissions('document:manage_access')
 export class ShareDocumentController {
-  constructor(private readonly shareDocumentService: ShareDocumentService) { }
+  constructor(private readonly shareDocumentService: ShareDocumentService) {}
 
   @Get('access')
-  async getAccess(
+  getAccess(
     @Param('documentId') documentId: string,
     @Param('workspaceId') workspaceId: string,
   ) {
@@ -83,6 +90,56 @@ export class ShareDocumentController {
     @Param('documentId') documentId: string,
     @Param('userId') userId: string,
   ) {
-    return this.shareDocumentService.removeAccess(documentId, workspaceId, userId);
+    return this.shareDocumentService.removeAccess(
+      documentId,
+      workspaceId,
+      userId,
+    );
+  }
+
+  @Patch('pending-shares/:shareId')
+  updatePendingRole(
+    @Param('workspaceId') workspaceId: string,
+    @Param('documentId') documentId: string,
+    @Param('shareId') shareId: string,
+    @Body() dto: UpdatePendingShareRoleDto,
+  ) {
+    return this.shareDocumentService.updatePendingShareRole(
+      documentId,
+      workspaceId,
+      shareId,
+      dto,
+    );
+  }
+
+  @Delete('pending-shares/:shareId')
+  removePendingShare(
+    @Param('workspaceId') workspaceId: string,
+    @Param('documentId') documentId: string,
+    @Param('shareId') shareId: string,
+  ) {
+    return this.shareDocumentService.removePendingShare(
+      documentId,
+      workspaceId,
+      shareId,
+    );
+  }
+}
+
+@Controller('document-shares/:token')
+export class DocumentShareInvitationController {
+  constructor(private readonly shareDocumentService: ShareDocumentService) {}
+
+  @Get('resolve')
+  resolve(@Param('token') token: string) {
+    return this.shareDocumentService.resolveShareToken(token);
+  }
+
+  @Post('accept')
+  accept(@Param('token') token: string, @Req() req: any) {
+    return this.shareDocumentService.acceptShareToken(
+      token,
+      req.user._id.toString(),
+    );
   }
 }

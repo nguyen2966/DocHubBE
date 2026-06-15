@@ -23,6 +23,7 @@ export class LocalStorageProvider extends StorageContract {
 
   async overwrite(key: string, buffer: Buffer, mimeType: string): Promise<void> {
     const fullPath = this.resolvePath(key);
+    console.log(fullPath);
     this.ensureDir(fullPath);
     fs.writeFileSync(fullPath, buffer);
     this.logger.log(`Overwritten: ${key}`);

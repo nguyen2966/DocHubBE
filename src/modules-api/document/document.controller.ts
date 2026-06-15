@@ -10,7 +10,6 @@ import { RequireWorkspacePermission } from 'src/modules-system/permissions/decor
 import { RequireDocumentPermissions } from 'src/modules-system/permissions/decorators/require-document-permission.decorator';
 import { DocumentService } from './document.service';
 import { CreateDocumentDto } from './dto/create-document.dto';
-import { ShareDocumentDto } from './dto/share-document.dto';
 import { UploadPdfDto } from './dto/upload-pdf.dto';
 import { ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { RenameDocumentDto } from './dto/rename-document.dto';

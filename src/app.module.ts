@@ -23,6 +23,7 @@ import { PermissionsModule } from './modules-system/permissions/permissions.modu
 import { StorageModule } from './modules-system/storage/storage.module';
 import { WebsocketModule } from './modules-system/websocket/websocket.module';
 import { ShareDocumentModule } from './modules-api/share-document/share-document.module';
+import { MySharedDocumentsModule } from './modules-api/my-shared-documents/my-shared-documents.module';
 
 @Module({
   imports: [AuthModule,
@@ -53,7 +54,8 @@ import { ShareDocumentModule } from './modules-api/share-document/share-document
             PermissionsModule,
             StorageModule,
             WebsocketModule,
-            ShareDocumentModule
+            ShareDocumentModule,
+            MySharedDocumentsModule
           ],
   controllers: [AppController],
   providers: [AppService,
