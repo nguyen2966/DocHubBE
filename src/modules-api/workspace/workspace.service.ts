@@ -38,6 +38,8 @@ import {
   toObjectIds,
   toStringId,
 } from 'src/common/utils/mongo-id.util'
+import { ActivityService } from '../activity/activity.service'
+import { ACTIVITY_ACTION, ACTIVITY_TARGET } from '../activity/activity.constants'
 
 @Injectable()
 export class WorkspaceService implements OnModuleInit {
@@ -60,7 +62,8 @@ export class WorkspaceService implements OnModuleInit {
     @InjectModel(Document.name)
     private readonly documentModel: Model<Document>,
     @InjectModel(DocumentPermission.name)
-    private readonly documentPermissionModel: Model<DocumentPermission>
+    private readonly documentPermissionModel: Model<DocumentPermission>,
+    private readonly activityService: ActivityService,
   ) { }
 
   async onModuleInit() {
@@ -197,6 +200,15 @@ export class WorkspaceService implements OnModuleInit {
       joinedAt: new Date(),
     })
 
+    await this.activityService.recordSafe({
+      workspaceId: workspace._id as Types.ObjectId,
+      actorId: userId,
+      actionType: ACTIVITY_ACTION.WORKSPACE_CREATION,
+      targetType: ACTIVITY_TARGET.WORKSPACE,
+      targetId: workspace._id as Types.ObjectId,
+      metadata: { name: workspace.name },
+    })
+
     return workspace
   }
 
@@ -327,6 +339,15 @@ export class WorkspaceService implements OnModuleInit {
       .lean()
 
     if (!workspace) throw new NotFoundException('Workspace không tồn tại')
+    await this.activityService.recordSafe({
+      workspaceId,
+      actorId: userId,
+      actionType: ACTIVITY_ACTION.UPDATE_SETTINGS,
+      targetType: ACTIVITY_TARGET.WORKSPACE,
+      targetId: workspaceId,
+      metadata: { changes: dto },
+    })
+
     return workspace
   }
 
@@ -351,15 +372,13 @@ export class WorkspaceService implements OnModuleInit {
       }),
 
       // Soft delete tất cả members (kể cả bản thân actor)
-      this.memberModel.updateMany(
-        { workspaceId: wsId, isDeleted: false },
-        { $set: { isDeleted: true, deletedAt: now, deletedBy } },
+      this.memberModel.deleteMany(
+        { workspaceId: wsId, isDeleted: false }
       ),
 
       // Expire tất cả pending invitations
-      this.invitationModel.updateMany(
-        { workspaceId: wsId, status: 'pending' },
-        { $set: { status: 'expired' } },
+      this.invitationModel.deleteMany(
+        { workspaceId: wsId, status: 'pending' }
       ),
 
       this.documentPermissionModel.deleteMany({
@@ -435,11 +454,29 @@ export class WorkspaceService implements OnModuleInit {
       }
     }
 
+    const targetBefore = await this.memberModel
+      .findOne({
+        workspaceId: toObjectId(workspaceId),
+        userId: toObjectId(targetUserId),
+        isDeleted: false,
+      })
+      .populate('roleId', 'name')
+      .populate('userId', 'fullName email avatarUrl')
+      .lean()
+
+    if (!targetBefore) {
+      throw new NotFoundException('Member not found')
+    }
+
+    const oldRole = (targetBefore.roleId as any)?.name;
+    const targetUser = targetBefore.userId as any;
+
     const updated = await this.memberModel
       .findOneAndUpdate(
         {
           workspaceId: toObjectId(workspaceId),
           userId: toObjectId(targetUserId),
+          isDeleted: false,
         },
         {
           roleId: newRoleId,
@@ -449,14 +486,26 @@ export class WorkspaceService implements OnModuleInit {
         },
       )
       .populate('roleId', 'name')
-      .lean();
+      .lean()
 
     if (!updated) {
-      throw new NotFoundException(
-        'Member not found',
-      );
+      throw new NotFoundException('Member not found')
     }
 
+    await this.activityService.recordSafe({
+      workspaceId,
+      actorId,
+      actionType: ACTIVITY_ACTION.CHANGE_USER_ROLE,
+      targetType: ACTIVITY_TARGET.MEMBER,
+      targetId: targetUserId,
+      metadata: {
+        targetUserId,
+        targetUserEmail: targetUser?.email,
+        targetUserFullName: targetUser?.fullName,
+        oldRole,
+        newRole: dto.role,
+      },
+    });
     return updated;
   }
 
@@ -476,13 +525,31 @@ export class WorkspaceService implements OnModuleInit {
       )
     }
 
-    const target = await this.getMember(workspaceId, targetUserId);
-    if (!target) throw new NotFoundException('Member not found');
+    const targetMember = await this.memberModel
+      .findOne({
+        workspaceId: toObjectId(workspaceId),
+        userId: toObjectId(targetUserId),
+        isDeleted: false,
+      })
+      .populate('userId', 'fullName email avatarUrl')
+      .populate('roleId', 'name')
+      .lean()
 
-    if (target.roleId.equals(this.adminRoleId)) {
+    if (!targetMember) {
+      throw new NotFoundException('Member not found')
+    }
+
+    const targetUser = targetMember.userId as any
+    const targetRole = targetMember.roleId as any
+    const targetRoleName = targetRole?.name
+
+    if (targetRoleName === 'admin') {
       const adminCount = await this.getActiveAdminCount(workspaceId)
+
       if (adminCount <= 1) {
-        throw new BadRequestException('Workspace must have at least 1 admin');
+        throw new BadRequestException(
+          'Workspace must have at least 1 admin',
+        )
       }
     }
 
@@ -491,10 +558,32 @@ export class WorkspaceService implements OnModuleInit {
       targetUserId,
     )
 
-    await this.memberModel.deleteOne({
+    const deleteResult = await this.memberModel.deleteOne({
       workspaceId: toObjectId(workspaceId),
       userId: toObjectId(targetUserId),
-    });
+      isDeleted: false,
+    })
+
+    if (deleteResult.deletedCount === 0) {
+      throw new NotFoundException('Member not found')
+    }
+
+    await this.activityService.recordSafe({
+      workspaceId,
+      actorId,
+      actionType: ACTIVITY_ACTION.REMOVE_USER,
+      targetType: ACTIVITY_TARGET.MEMBER,
+      targetId: targetUserId,
+      metadata: {
+        targetUserId,
+        targetUserEmail: targetUser?.email,
+        targetUserFullName: targetUser?.fullName,
+        targetUserAvatarUrl: targetUser?.avatarUrl ?? null,
+        oldRole: targetRoleName,
+        removedRole: targetRoleName,
+        selfRemoved: false,
+      },
+    })
   }
 
   /**
@@ -518,6 +607,15 @@ export class WorkspaceService implements OnModuleInit {
       { workspaceId: toObjectId(workspaceId), userId: toObjectId(userId) },
       { $set: this.softDeleteUpdate(userId) },
     )
+
+    await this.activityService.recordSafe({
+      workspaceId,
+      actorId: userId,
+      actionType: ACTIVITY_ACTION.REMOVE_USER,
+      targetType: ACTIVITY_TARGET.MEMBER,
+      targetId: userId,
+      metadata: { selfRemoved: true },
+    })
   }
 
   // ─── Invitations ──────────────────────────────────────────
@@ -624,6 +722,27 @@ export class WorkspaceService implements OnModuleInit {
           return { email, status: 'error' }
         }
       }),
+    )
+
+    await Promise.all(
+      results
+        .filter((result) => result.status === 'invited')
+        .map((result) => {
+          const invitedUser = userByEmail.get(result.email)
+
+          return this.activityService.recordSafe({
+            workspaceId,
+            actorId,
+            actionType: ACTIVITY_ACTION.INVITE_USER,
+            targetType: ACTIVITY_TARGET.MEMBER,
+            targetId: invitedUser?._id as Types.ObjectId | undefined,
+            metadata: {
+              email: result.email,
+              role: dto.role,
+              invitationId: result.invitationId,
+            },
+          })
+        }),
     )
 
     return results;

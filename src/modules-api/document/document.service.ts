@@ -13,6 +13,8 @@ import { buildDocumentKey } from 'src/modules-system/storage/storage-key.util';
 import { UploadJobService } from './upload-job.service';
 import { UploadJob } from 'src/modules-system/mongodb/schemas/upload-job';
 import { toObjectId, toStringId } from 'src/common/utils/mongo-id.util';
+import { ActivityService } from '../activity/activity.service';
+import { ACTIVITY_ACTION, ACTIVITY_TARGET } from '../activity/activity.constants';
 
 
 
@@ -30,7 +32,8 @@ export class DocumentService {
     @InjectQueue('document-processing')
     private readonly documentQueue: Queue, // Inject Queue
     private readonly storage: StorageContract,
-    private readonly uploadJobService: UploadJobService
+    private readonly uploadJobService: UploadJobService,
+    private readonly activityService: ActivityService,
 
 
   ) { }
@@ -63,6 +66,15 @@ export class DocumentService {
       documentId: toStringId(doc._id),
       markdownContent: dto.markdownContent,
       workspaceId,
+    });
+
+    await this.activityService.recordSafe({
+      workspaceId,
+      actorId: ownerId,
+      actionType: ACTIVITY_ACTION.CREATE_DOCUMENT,
+      targetType: ACTIVITY_TARGET.DOCUMENT,
+      targetId: doc._id,
+      metadata: { title: doc.title, sourceType: doc.sourceType },
     });
 
     return doc;
@@ -158,6 +170,15 @@ export class DocumentService {
       jobId,
     })
 
+    await this.activityService.recordSafe({
+      workspaceId,
+      actorId: ownerId,
+      actionType: ACTIVITY_ACTION.CREATE_DOCUMENT,
+      targetType: ACTIVITY_TARGET.DOCUMENT,
+      targetId: doc._id,
+      metadata: { title: doc.title, sourceType: doc.sourceType },
+    })
+
     return {
       ...doc.toObject(),
       pdfStorageKey: key,
@@ -206,7 +227,7 @@ export class DocumentService {
 
   // ─── Flow 3: Edit PDF (Apryse export → overwrite) ─────────────────────────
 
-  async editPdf(documentId: string, fileBuffer: Buffer) {
+  async editPdf(documentId: string, fileBuffer: Buffer, actorId: string) {
     const documentObjectId = toObjectId(documentId)
     const doc = await this.documentModel.findById(documentObjectId).lean();
     if (!doc) throw new NotFoundException('Document not found');
@@ -222,11 +243,22 @@ export class DocumentService {
 
     // updatedAt is handled by the worker once extraction completes;
     // mark it immediately so the UI shows the document is being processed
-    return this.documentModel.findByIdAndUpdate(
+    const updated = await this.documentModel.findByIdAndUpdate(
       documentObjectId,
       { processingStatus: 'processing', updatedAt: new Date() },
       { new: true },
     );
+
+    await this.activityService.recordSafe({
+      workspaceId: doc.workspaceId,
+      actorId,
+      actionType: ACTIVITY_ACTION.UPDATE_DOCUMENT,
+      targetType: ACTIVITY_TARGET.DOCUMENT,
+      targetId: documentObjectId,
+      metadata: { changeType: 'content_updated', title: doc.title },
+    })
+
+    return updated
   }
 
   private async assignOwner(documentId: Types.ObjectId, userId: Types.ObjectId) {
@@ -263,7 +295,12 @@ export class DocumentService {
       .lean();
   }
 
-  async rename(documentId: string, workspaceId: string, body: RenameDocumentDto) {
+  async rename(
+    documentId: string,
+    workspaceId: string,
+    actorId: string,
+    body: RenameDocumentDto,
+  ) {
     const { title } = body;
     const documentObjectId = toObjectId(documentId)
     const resolved = await this.resolveTitle(
@@ -271,21 +308,61 @@ export class DocumentService {
       title,
       documentObjectId,
     )
-    return this.documentModel.findByIdAndUpdate(
-      documentObjectId,
-      { title: resolved },
-      { new: true },
-    )
+
+    const oldDocument = await this.documentModel
+      .findById(documentId)
+      .select('title workspaceId')
+      .lean()
+
+    if (!oldDocument) {
+      throw new NotFoundException('Document not found')
+    }
+
+    const updated = await this.documentModel
+      .findByIdAndUpdate(
+        documentId,
+        { title: resolved },
+        { new: true },
+      )
+      .lean();
+
+    await this.activityService.recordSafe({
+      workspaceId: oldDocument.workspaceId,
+      actorId,
+      actionType: 'update_document',
+      targetType: 'document',
+      targetId: updated._id,
+      metadata: {
+        changeType: 'renamed',
+        oldTitle: oldDocument.title,
+        newTitle: updated.title,
+        documentTitle: updated.title,
+      },
+    })
+
+    return updated
   }
 
-  async delete(documentId: string) {
+  async delete(documentId: string, actorId: string) {
     const documentObjectId = toObjectId(documentId)
+    const doc = await this.documentModel.findById(documentObjectId).lean()
+    if (!doc) throw new NotFoundException('Document not found')
+
     // TODO: add pending-share/annotation/comment cleanup when those modules
     // own persistence and transaction boundaries.
     await Promise.all([
       this.documentModel.findByIdAndDelete(documentObjectId),
       this.documentPermissionModel.deleteMany({ documentId: documentObjectId }),
     ])
+
+    await this.activityService.recordSafe({
+      workspaceId: doc.workspaceId,
+      actorId,
+      actionType: ACTIVITY_ACTION.DELETE_DOCUMENT,
+      targetType: ACTIVITY_TARGET.DOCUMENT,
+      targetId: documentObjectId,
+      metadata: { title: doc.title },
+    })
   }
 
   async getMembers(documentId: string) {

@@ -26,6 +26,8 @@ import {
   toObjectIds,
   toStringId,
 } from 'src/common/utils/mongo-id.util';
+import { ActivityService } from '../activity/activity.service';
+import { ACTIVITY_ACTION, ACTIVITY_TARGET } from '../activity/activity.constants';
 
 type SkipReason =
   | 'WORKSPACE_MEMBER'
@@ -55,6 +57,7 @@ export class ShareDocumentService {
     private readonly pendingShareModel: Model<PendingDocumentShare>,
 
     private readonly permissionService: PermissionsService,
+    private readonly activityService: ActivityService,
   ) { }
 
   private escapeRegex(value: string) {
@@ -345,12 +348,16 @@ export class ShareDocumentService {
     const documentObjectId = toObjectId(documentId);
     const workspaceObjectId = toObjectId(workspaceId);
     const grantedByObjectId = toObjectId(grantedBy);
+
     const emails = [...new Set(dto.emails.map((e) => this.normalizeEmail(e)))];
     const { role } = dto;
 
     const document = await this.documentModel
-      .findOne({ _id: documentObjectId, workspaceId: workspaceObjectId })
-      .select('_id ownerId title')
+      .findOne({
+        _id: documentObjectId,
+        workspaceId: workspaceObjectId,
+      })
+      .select('_id ownerId title sourceType')
       .lean();
 
     if (!document) {
@@ -358,9 +365,13 @@ export class ShareDocumentService {
     }
 
     const ownerId = toStringId((document as any).ownerId);
+    const documentTitle = (document as any).title;
+    const sourceType = (document as any).sourceType;
 
     const users = await this.userModel
-      .find({ email: { $in: emails } })
+      .find({
+        email: { $in: emails },
+      })
       .select('_id email fullName avatarUrl')
       .lean();
 
@@ -406,24 +417,46 @@ export class ShareDocumentService {
     );
 
     const existingRoleMap = new Map<string, string | 'owner'>(
-      existingPermissions.map((p) => [
-        toStringId((p as any).userId),
-        (p as any).role,
-      ] as [string, string | 'owner']),
+      existingPermissions.map(
+        (p) =>
+          [
+            toStringId((p as any).userId),
+            (p as any).role,
+          ] as [string, string | 'owner'],
+      ),
     );
 
     const pendingByEmail = new Map(
       existingPendingShares.map((s) => [(s as any).email, s]),
     );
 
-    const granted: Array<{ userId: string; email: string; role: string }> = [];
+    const granted: Array<{
+      userId: string;
+      email: string;
+      role: string;
+    }> = [];
+
     const pending: Array<{
       shareId: string;
       email: string;
       role: string;
       shareLink: string;
     }> = [];
-    const skipped: Array<{ email: string; reason: SkipReason }> = [];
+
+    const skipped: Array<{
+      email: string;
+      reason: SkipReason;
+    }> = [];
+
+    const activityTargets: Array<{
+      userId?: string;
+      email: string;
+      fullName?: string;
+      avatarUrl?: string | null;
+      role: string;
+      previousRole?: string;
+      shareStatus: 'granted' | 'pending' | 'role_updated';
+    }> = [];
 
     for (const email of emails) {
       const user = userByEmail.get(email);
@@ -455,7 +488,10 @@ export class ShareDocumentService {
         }
 
         await this.documentPermissionModel.findOneAndUpdate(
-          { documentId: documentObjectId, userId: userObjectId },
+          {
+            documentId: documentObjectId,
+            userId: userObjectId,
+          },
           {
             documentId: documentObjectId,
             userId: userObjectId,
@@ -475,6 +511,16 @@ export class ShareDocumentService {
           role,
         });
 
+        activityTargets.push({
+          userId,
+          email,
+          fullName: (user as any).fullName,
+          avatarUrl: (user as any).avatarUrl ?? null,
+          role,
+          previousRole: existingRole,
+          shareStatus: existingRole ? 'role_updated' : 'granted',
+        });
+
         continue;
       }
 
@@ -487,6 +533,7 @@ export class ShareDocumentService {
           role: (existingPending as any).role,
           shareLink: this.createShareLink((existingPending as any).token),
         });
+
         continue;
       }
 
@@ -509,6 +556,47 @@ export class ShareDocumentService {
         role,
         shareLink: this.createShareLink(token),
       });
+
+      activityTargets.push({
+        email,
+        role,
+        shareStatus: 'pending',
+      });
+    }
+
+    if (activityTargets.length) {
+      await Promise.all(
+        activityTargets.map((target) =>
+          this.activityService.recordSafe({
+            workspaceId,
+            actorId: grantedBy,
+            actionType: ACTIVITY_ACTION.SHARE_DOCUMENT,
+            targetType: ACTIVITY_TARGET.DOCUMENT,
+            targetId: documentId,
+            metadata: {
+              documentId,
+              documentTitle,
+              title: documentTitle,
+              sourceType,
+
+              targetUserId: target.userId,
+              targetUserEmail: target.email,
+              targetUserFullName: target.fullName,
+              targetUserAvatarUrl: target.avatarUrl ?? null,
+
+              role: target.role,
+              oldRole: target.previousRole,
+              newRole: target.role,
+              shareStatus: target.shareStatus,
+
+              changeType:
+                target.shareStatus === 'role_updated'
+                  ? 'access_role_updated'
+                  : undefined,
+            },
+          }),
+        ),
+      );
     }
 
     return { granted, pending, skipped };
@@ -518,6 +606,7 @@ export class ShareDocumentService {
     documentId: string,
     workspaceId: string,
     userId: string,
+    actorId: string,
     dto: UpdateDocumentRoleDto,
   ) {
     const documentObjectId = toObjectId(documentId);
@@ -569,33 +658,38 @@ export class ShareDocumentService {
     }
 
     perm.role = dto.role;
-    return perm.save();
+    const updated = await perm.save();
+
+    return updated;
   }
 
-  async removeAccess(documentId: string, workspaceId: string, userId: string) {
-    const documentObjectId = toObjectId(documentId);
-    const workspaceObjectId = toObjectId(workspaceId);
-    const userObjectId = toObjectId(userId);
-    const document = await this.documentModel
-      .findOne({ _id: documentObjectId, workspaceId: workspaceObjectId })
-      .select('_id ownerId')
-      .lean();
+  async removeAccess(
+    documentId: string,
+    workspaceId: string,
+    userId: string,
+    actorId: string,
+  ) {
+    const documentObjectId = toObjectId(documentId)
+    const workspaceObjectId = toObjectId(workspaceId)
+    const userObjectId = toObjectId(userId)
 
-    if (!document) {
-      throw new NotFoundException('Document not found');
-    }
+    const [document, permission, workspaceMember] = await Promise.all([
+      this.documentModel
+        .findOne({
+          _id: documentObjectId,
+          workspaceId: workspaceObjectId,
+        })
+        .select('_id title ownerId workspaceId sourceType')
+        .lean(),
 
-    const ownerId = toStringId((document as any).ownerId);
+      this.documentPermissionModel
+        .findOne({
+          documentId: documentObjectId,
+          userId: userObjectId,
+        })
+        .populate('userId', 'fullName email avatarUrl')
+        .lean(),
 
-    if (userId === ownerId) {
-      throw new ConflictException('Cannot remove document owner');
-    }
-
-    const [perm, workspaceMember] = await Promise.all([
-      this.documentPermissionModel.findOne({
-        documentId: documentObjectId,
-        userId: userObjectId,
-      }),
       this.memberModel
         .findOne({
           workspaceId: workspaceObjectId,
@@ -603,32 +697,70 @@ export class ShareDocumentService {
           isDeleted: false,
         })
         .lean(),
-    ]);
+    ])
+
+    if (!document) {
+      throw new NotFoundException('Document not found')
+    }
+
+    const ownerId = toStringId((document as any).ownerId)
+
+    if (userId === ownerId) {
+      throw new ConflictException('Cannot remove document owner')
+    }
 
     if (workspaceMember) {
-      throw new ConflictException('Workspace member already has access');
+      throw new ConflictException('Workspace member already has access')
     }
 
-    if (!perm) {
-      throw new NotFoundException('Permission not found');
+    if (!permission) {
+      throw new NotFoundException('Permission not found')
     }
 
-    if (perm.role === 'owner') {
-      throw new ConflictException('Cannot remove document owner');
+    if (permission.role === 'owner') {
+      throw new ConflictException('Cannot remove document owner')
     }
 
-    await this.documentPermissionModel.deleteOne({
-      documentId: documentObjectId,
-      userId: userObjectId,
-    });
+    const targetUser = (permission as any).userId
+    const revokedRole = permission.role
 
-    return { success: true };
+    const deleteResult = await this.documentPermissionModel.deleteOne({
+      _id: permission._id,
+    })
+
+    if (deleteResult.deletedCount === 0) {
+      throw new NotFoundException('Permission not found')
+    }
+
+    await this.activityService.recordSafe({
+      workspaceId,
+      actorId,
+      actionType: ACTIVITY_ACTION.REVOKE_ACCESS,
+      targetType: ACTIVITY_TARGET.DOCUMENT,
+      targetId: documentId,
+      metadata: {
+        documentId,
+        documentTitle: (document as any).title,
+        sourceType: (document as any).sourceType,
+
+        targetUserId: userId,
+        targetUserEmail: targetUser?.email,
+        targetUserFullName: targetUser?.fullName,
+        targetUserAvatarUrl: targetUser?.avatarUrl ?? null,
+
+        revokedRole,
+        role: revokedRole,
+      },
+    })
+
+    return { success: true }
   }
 
   async updatePendingShareRole(
     documentId: string,
     workspaceId: string,
     shareId: string,
+    actorId: string,
     dto: UpdatePendingShareRoleDto,
   ) {
     const pendingShare = await this.pendingShareModel.findOne({
@@ -645,6 +777,21 @@ export class ShareDocumentService {
     pendingShare.role = dto.role;
     await pendingShare.save();
 
+    await this.activityService.recordSafe({
+      workspaceId,
+      actorId,
+      actionType: ACTIVITY_ACTION.SHARE_DOCUMENT,
+      targetType: ACTIVITY_TARGET.DOCUMENT,
+      targetId: documentId,
+      metadata: {
+        changeType: 'access_role_updated',
+        pending: true,
+        shareId,
+        email: pendingShare.email,
+        role: dto.role,
+      },
+    })
+
     return {
       shareId: toStringId(pendingShare),
       email: pendingShare.email,
@@ -657,6 +804,7 @@ export class ShareDocumentService {
     documentId: string,
     workspaceId: string,
     shareId: string,
+    actorId: string,
   ) {
     const pendingShare = await this.pendingShareModel.findOne({
       _id: toObjectId(shareId),
@@ -671,6 +819,19 @@ export class ShareDocumentService {
 
     pendingShare.status = 'revoked';
     await pendingShare.save();
+
+    await this.activityService.recordSafe({
+      workspaceId,
+      actorId,
+      actionType: ACTIVITY_ACTION.REVOKE_ACCESS,
+      targetType: ACTIVITY_TARGET.DOCUMENT,
+      targetId: documentId,
+      metadata: {
+        pending: true,
+        shareId,
+        email: pendingShare.email,
+      },
+    })
 
     return { success: true };
   }
