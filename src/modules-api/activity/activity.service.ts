@@ -52,7 +52,8 @@ export class ActivityService {
   }
 
   async findByWorkspace(workspaceId: string, query: ActivityLogQueryDto) {
-    const limit = Math.min(query.limit ?? 20, 50)
+    const page = query.page ?? 1
+    const limit = Math.min(query.limit ?? 13, 50)
     const filter: Record<string, any> = {
       workspaceId: toObjectId(workspaceId),
     }
@@ -83,30 +84,36 @@ export class ActivityService {
       filter.targetType = query.targetType
     }
 
-    if (query.cursor) {
-      const cursor = this.decodeCursor(query.cursor)
-      filter.$or = [
-        { createdAt: { $lt: cursor.createdAt } },
-        {
-          createdAt: cursor.createdAt,
-          _id: { $lt: cursor.id },
-        },
-      ]
+    if (query.from || query.to) {
+      const from = query.from ? new Date(query.from) : undefined
+      const to = query.to ? new Date(query.to) : undefined
+
+      if (from && to && from > to) {
+        throw new BadRequestException("'from' must be before or equal to 'to'")
+      }
+
+      filter.createdAt = {
+        ...(from ? { $gte: from } : {}),
+        ...(to ? { $lte: to } : {}),
+      }
     }
 
-    const activities = await this.activityLogModel
-      .find(filter)
-      .sort({ createdAt: -1, _id: -1 })
-      .limit(limit + 1)
-      .populate('actorId', 'fullName email avatarUrl')
-      .lean()
+    const skip = (page - 1) * limit
+    const [activities, totalItems] = await Promise.all([
+      this.activityLogModel
+        .find(filter)
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('actorId', 'fullName email avatarUrl')
+        .lean(),
+      this.activityLogModel.countDocuments(filter),
+    ])
 
-    const hasMore = activities.length > limit
-    const pageItems = hasMore ? activities.slice(0, limit) : activities
-    const lastItem = pageItems[pageItems.length - 1] as any
+    const totalPages = Math.ceil(totalItems / limit)
 
     return {
-      items: pageItems.map((activity: any) => ({
+      items: activities.map((activity: any) => ({
         ...activity,
         _id: toStringId(activity._id),
         workspaceId: toStringId(activity.workspaceId),
@@ -118,45 +125,12 @@ export class ActivityService {
           : null,
         targetId: activity.targetId ? toStringId(activity.targetId) : null,
       })),
-      nextCursor:
-        hasMore && lastItem
-          ? this.encodeCursor(lastItem.createdAt, lastItem._id)
-          : null,
-      hasMore,
-    }
-  }
-
-  private encodeCursor(createdAt: Date, id: Types.ObjectId): string {
-    return Buffer.from(
-      JSON.stringify({
-        createdAt: createdAt.toISOString(),
-        id: toStringId(id),
-      }),
-    ).toString('base64')
-  }
-
-  private decodeCursor(cursor: string): {
-    createdAt: Date
-    id: Types.ObjectId
-  } {
-    try {
-      const decoded = JSON.parse(Buffer.from(cursor, 'base64').toString('utf8'))
-      const createdAt = new Date(decoded.createdAt)
-
-      if (
-        typeof decoded.createdAt !== 'string' ||
-        Number.isNaN(createdAt.getTime()) ||
-        typeof decoded.id !== 'string'
-      ) {
-        throw new Error('Malformed cursor')
-      }
-
-      return {
-        createdAt,
-        id: toObjectId(decoded.id),
-      }
-    } catch {
-      throw new BadRequestException('Invalid activity cursor')
+      page,
+      limit,
+      totalItems,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
     }
   }
 }

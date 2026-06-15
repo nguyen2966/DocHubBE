@@ -308,21 +308,36 @@ export class DocumentService {
       title,
       documentObjectId,
     )
-    const updated = await this.documentModel.findByIdAndUpdate(
-      documentObjectId,
-      { title: resolved },
-      { new: true },
-    )
 
-    if (!updated) throw new NotFoundException('Document not found')
+    const oldDocument = await this.documentModel
+      .findById(documentId)
+      .select('title workspaceId')
+      .lean()
+
+    if (!oldDocument) {
+      throw new NotFoundException('Document not found')
+    }
+
+    const updated = await this.documentModel
+      .findByIdAndUpdate(
+        documentId,
+        { title: resolved },
+        { new: true },
+      )
+      .lean();
 
     await this.activityService.recordSafe({
-      workspaceId,
+      workspaceId: oldDocument.workspaceId,
       actorId,
-      actionType: ACTIVITY_ACTION.UPDATE_DOCUMENT,
-      targetType: ACTIVITY_TARGET.DOCUMENT,
-      targetId: documentObjectId,
-      metadata: { changeType: 'renamed', title: resolved },
+      actionType: 'update_document',
+      targetType: 'document',
+      targetId: updated._id,
+      metadata: {
+        changeType: 'renamed',
+        oldTitle: oldDocument.title,
+        newTitle: updated.title,
+        documentTitle: updated.title,
+      },
     })
 
     return updated

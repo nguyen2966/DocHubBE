@@ -372,15 +372,13 @@ export class WorkspaceService implements OnModuleInit {
       }),
 
       // Soft delete tất cả members (kể cả bản thân actor)
-      this.memberModel.updateMany(
-        { workspaceId: wsId, isDeleted: false },
-        { $set: { isDeleted: true, deletedAt: now, deletedBy } },
+      this.memberModel.deleteMany(
+        { workspaceId: wsId, isDeleted: false }
       ),
 
       // Expire tất cả pending invitations
-      this.invitationModel.updateMany(
-        { workspaceId: wsId, status: 'pending' },
-        { $set: { status: 'expired' } },
+      this.invitationModel.deleteMany(
+        { workspaceId: wsId, status: 'pending' }
       ),
 
       this.documentPermissionModel.deleteMany({
@@ -456,11 +454,29 @@ export class WorkspaceService implements OnModuleInit {
       }
     }
 
+    const targetBefore = await this.memberModel
+      .findOne({
+        workspaceId: toObjectId(workspaceId),
+        userId: toObjectId(targetUserId),
+        isDeleted: false,
+      })
+      .populate('roleId', 'name')
+      .populate('userId', 'fullName email avatarUrl')
+      .lean()
+
+    if (!targetBefore) {
+      throw new NotFoundException('Member not found')
+    }
+
+    const oldRole = (targetBefore.roleId as any)?.name;
+    const targetUser = targetBefore.userId as any;
+
     const updated = await this.memberModel
       .findOneAndUpdate(
         {
           workspaceId: toObjectId(workspaceId),
           userId: toObjectId(targetUserId),
+          isDeleted: false,
         },
         {
           roleId: newRoleId,
@@ -470,12 +486,10 @@ export class WorkspaceService implements OnModuleInit {
         },
       )
       .populate('roleId', 'name')
-      .lean();
+      .lean()
 
     if (!updated) {
-      throw new NotFoundException(
-        'Member not found',
-      );
+      throw new NotFoundException('Member not found')
     }
 
     await this.activityService.recordSafe({
@@ -484,9 +498,14 @@ export class WorkspaceService implements OnModuleInit {
       actionType: ACTIVITY_ACTION.CHANGE_USER_ROLE,
       targetType: ACTIVITY_TARGET.MEMBER,
       targetId: targetUserId,
-      metadata: { role: dto.role },
-    })
-
+      metadata: {
+        targetUserId,
+        targetUserEmail: targetUser?.email,
+        targetUserFullName: targetUser?.fullName,
+        oldRole,
+        newRole: dto.role,
+      },
+    });
     return updated;
   }
 

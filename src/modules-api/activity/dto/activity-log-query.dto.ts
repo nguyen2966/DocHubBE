@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer'
 import {
   IsIn,
+  IsDateString,
   IsInt,
   IsMongoId,
   IsOptional,
@@ -14,15 +15,17 @@ import type { ActivityTarget } from '../activity.constants'
 
 export class ActivityLogQueryDto {
   @IsOptional()
-  @IsString()
-  cursor?: string
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1
 
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(50)
-  limit?: number
+  limit?: number = 13
 
   @IsOptional()
   @IsString()
@@ -35,4 +38,12 @@ export class ActivityLogQueryDto {
   @IsOptional()
   @IsIn(Object.values(ACTIVITY_TARGET))
   targetType?: ActivityTarget
+
+  @IsOptional()
+  @IsDateString()
+  from?: string
+
+  @IsOptional()
+  @IsDateString()
+  to?: string
 }
