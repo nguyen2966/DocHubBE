@@ -12,9 +12,18 @@ import { StorageContract } from 'src/modules-system/storage/storage.contract';
 import { buildDocumentKey } from 'src/modules-system/storage/storage-key.util';
 import { UploadJobService } from './upload-job.service';
 import { UploadJob } from 'src/modules-system/mongodb/schemas/upload-job';
+import { Annotation } from 'src/modules-system/mongodb/schemas/annotation';
 import { toObjectId, toStringId } from 'src/common/utils/mongo-id.util';
 import { ActivityService } from '../activity/activity.service';
 import { ACTIVITY_ACTION, ACTIVITY_TARGET } from '../activity/activity.constants';
+
+type EditedRect = {
+  pageNumber: number
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
 
 
 
@@ -29,6 +38,8 @@ export class DocumentService {
     private readonly memberModel: Model<WorkspaceMember>,
     @InjectModel(UploadJob.name)
     private readonly uploadJobModel: Model<UploadJob>,
+    @InjectModel(Annotation.name)
+    private readonly annotationModel: Model<Annotation>,
     @InjectQueue('document-processing')
     private readonly documentQueue: Queue, // Inject Queue
     private readonly storage: StorageContract,
@@ -227,13 +238,43 @@ export class DocumentService {
 
   // ─── Flow 3: Edit PDF (Apryse export → overwrite) ─────────────────────────
 
-  async editPdf(documentId: string, fileBuffer: Buffer, actorId: string) {
+  async editPdf(
+    documentId: string,
+    fileBuffer: Buffer,
+    actorId: string,
+    editedRectsJson?: string,
+    degradedAnnotationIdsJson?: string,
+  ) {
     const documentObjectId = toObjectId(documentId)
     const doc = await this.documentModel.findById(documentObjectId).lean();
     if (!doc) throw new NotFoundException('Document not found');
 
+    const parsedEditedRects = this.parseEditedRects(editedRectsJson)
+    const parsedAnnotationIds = this.parseAnnotationIds(
+      degradedAnnotationIdsJson,
+    )
+
+    // debug only: verify edit degradation inputs before the PDF overwrite path continues.
+    console.log('[PDF_EDIT_DEBUG] service.editPdf parsed inputs', {
+      documentId,
+      documentObjectId: documentObjectId.toString(),
+      rawEditedRectsLength: editedRectsJson?.length ?? 0,
+      parsedEditedRects,
+      rawDegradedAnnotationIdsLength: degradedAnnotationIdsJson?.length ?? 0,
+      parsedAnnotationIds: parsedAnnotationIds.map((id) => id.toString()),
+      documentStorageKey: doc.pdfStorageKey,
+    })
+
     // Overwrite the file at the existing storage key
     await this.storage.overwrite(doc.pdfStorageKey, fileBuffer, 'application/pdf');
+    await this.degradeAnnotationsByIds(
+      documentObjectId,
+      parsedAnnotationIds,
+    )
+    await this.degradeOverlappingAnnotations(
+      documentObjectId,
+      parsedEditedRects,
+    )
 
     // Re-extract text preview from the edited PDF via background queue
     await this.documentQueue.add('extract-pdf', {
@@ -245,7 +286,11 @@ export class DocumentService {
     // mark it immediately so the UI shows the document is being processed
     const updated = await this.documentModel.findByIdAndUpdate(
       documentObjectId,
-      { processingStatus: 'processing', updatedAt: new Date() },
+      {
+        processingStatus: 'processing',
+        updatedAt: new Date(),
+        version: (doc.version ?? 1) + 1,
+      },
       { new: true },
     );
 
@@ -259,6 +304,177 @@ export class DocumentService {
     })
 
     return updated
+  }
+
+  private parseEditedRects(value?: string): EditedRect[] {
+    if (!value) return []
+
+    try {
+      const parsed = JSON.parse(value)
+      if (!Array.isArray(parsed)) return []
+
+      return parsed.filter((rect): rect is EditedRect =>
+        rect &&
+        Number.isFinite(rect.pageNumber) &&
+        Number.isFinite(rect.x1) &&
+        Number.isFinite(rect.y1) &&
+        Number.isFinite(rect.x2) &&
+        Number.isFinite(rect.y2),
+      )
+    } catch {
+      return []
+    }
+  }
+
+  private parseAnnotationIds(value?: string): Types.ObjectId[] {
+    if (!value) return []
+
+    try {
+      const parsed = JSON.parse(value)
+      if (!Array.isArray(parsed)) return []
+
+      return parsed
+        .filter(
+          (id): id is string =>
+            typeof id === 'string' && Types.ObjectId.isValid(id),
+        )
+        .map((id) => new Types.ObjectId(id))
+    } catch {
+      return []
+    }
+  }
+
+  private async degradeAnnotationsByIds(
+    documentId: Types.ObjectId,
+    annotationIds: Types.ObjectId[],
+  ) {
+    if (!annotationIds.length) {
+      // debug only: explicit id degradation was not requested.
+      console.log('[PDF_EDIT_DEBUG] degradeAnnotationsByIds skipped', {
+        documentId: documentId.toString(),
+        reason: 'no annotation ids',
+      })
+      return
+    }
+
+    // debug only: inspect explicit annotation id update target.
+    console.log('[PDF_EDIT_DEBUG] degradeAnnotationsByIds updating', {
+      documentId: documentId.toString(),
+      annotationIds: annotationIds.map((id) => id.toString()),
+    })
+
+    const result = await this.annotationModel.updateMany(
+      {
+        _id: { $in: annotationIds },
+        documentId,
+        status: 'active',
+      },
+      { $set: { visualState: 'point' } },
+    )
+
+    // debug only: verify explicit annotation id update result.
+    console.log('[PDF_EDIT_DEBUG] degradeAnnotationsByIds result', {
+      documentId: documentId.toString(),
+      matchedCount: result.matchedCount,
+      modifiedCount: result.modifiedCount,
+    })
+  }
+
+  private async degradeOverlappingAnnotations(
+    documentId: Types.ObjectId,
+    editedRects: EditedRect[],
+  ) {
+    if (!editedRects.length) {
+      // debug only: rect degradation was not requested.
+      console.log('[PDF_EDIT_DEBUG] degradeOverlappingAnnotations skipped', {
+        documentId: documentId.toString(),
+        reason: 'no edited rects',
+      })
+      return
+    }
+
+    const annotations = await this.annotationModel
+      .find({
+        documentId,
+        status: 'active',
+        $or: [
+          { visualState: 'highlight' },
+          { visualState: { $exists: false }, xfdf: { $type: 'string' } },
+        ],
+      })
+      .select('_id pageNumber position')
+      .lean()
+
+    const overlapChecks = annotations.map((annotation) => ({
+      annotationId: toStringId(annotation._id),
+      pageNumber: annotation.pageNumber,
+      position: annotation.position,
+      matchedRects: editedRects.filter(
+        (rect) =>
+          annotation.pageNumber === rect.pageNumber &&
+          this.isPointInsideRect(annotation.position, rect),
+      ),
+    }))
+
+    // debug only: inspect candidate annotations and overlap decisions.
+    console.log('[PDF_EDIT_DEBUG] degradeOverlappingAnnotations candidates', {
+      documentId: documentId.toString(),
+      editedRects,
+      annotationCount: annotations.length,
+      overlapChecks,
+    })
+
+    const overlappingAnnotationIds = annotations
+      .filter((annotation) =>
+        editedRects.some(
+          (rect) =>
+            annotation.pageNumber === rect.pageNumber &&
+            this.isPointInsideRect(annotation.position, rect),
+        ),
+      )
+      .map((annotation) => annotation._id)
+
+    if (!overlappingAnnotationIds.length) {
+      // debug only: no stored annotation positions matched the edit rects.
+      console.log('[PDF_EDIT_DEBUG] degradeOverlappingAnnotations no matches', {
+        documentId: documentId.toString(),
+        editedRects,
+      })
+      return
+    }
+
+    const result = await this.annotationModel.updateMany(
+      { _id: { $in: overlappingAnnotationIds } },
+      { $set: { visualState: 'point' } },
+    )
+
+    // debug only: verify rect overlap update result.
+    console.log('[PDF_EDIT_DEBUG] degradeOverlappingAnnotations result', {
+      documentId: documentId.toString(),
+      overlappingAnnotationIds: overlappingAnnotationIds.map((id) =>
+        toStringId(id),
+      ),
+      matchedCount: result.matchedCount,
+      modifiedCount: result.modifiedCount,
+    })
+  }
+
+  private isPointInsideRect(
+    point: { x: number; y: number },
+    rect: EditedRect,
+    padding = 4,
+  ): boolean {
+    const x1 = Math.min(rect.x1, rect.x2)
+    const x2 = Math.max(rect.x1, rect.x2)
+    const y1 = Math.min(rect.y1, rect.y2)
+    const y2 = Math.max(rect.y1, rect.y2)
+
+    return (
+      point.x >= x1 - padding &&
+      point.x <= x2 + padding &&
+      point.y >= y1 - padding &&
+      point.y <= y2 + padding
+    )
   }
 
   private async assignOwner(documentId: Types.ObjectId, userId: Types.ObjectId) {

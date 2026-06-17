@@ -9,7 +9,7 @@ import {
   toObjectId,
   toObjectIds,
   toStringId,
-} from 'src/common/utils/mongo-id.util'
+} from '../../common/utils/mongo-id.util'
 
 
 @Injectable()
