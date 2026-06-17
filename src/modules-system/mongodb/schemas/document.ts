@@ -43,6 +43,9 @@ export class Document {
 
   @Prop({ type: String, enum: ['processed', 'unprocessable', 'processing'], default: 'processed' })
   processingStatus: string
+
+  @Prop({ type: Number, default: 1 })
+  version: number
 }
 
 export const DocumentSchema = SchemaFactory.createForClass(Document);

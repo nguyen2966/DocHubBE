@@ -113,10 +113,33 @@ export class DocumentController {
   editPdf(
     @Param('documentId') documentId: string,
     @UploadedFile() file: Express.Multer.File,
+    @Body('editedRects') editedRects: string | undefined,
+    @Body('degradedAnnotationIds') degradedAnnotationIds: string | undefined,
     @Req() req: any,
   ) {
     if (!file) throw new BadRequestException('File is required');
-    return this.documentService.editPdf(documentId, file.buffer, req.user._id.toString());
+
+    // debug only: trace multipart fields received by the edit PDF endpoint.
+    console.log('[PDF_EDIT_DEBUG] controller.editPdf received', {
+      documentId,
+      fileSize: file.size,
+      fileMimeType: file.mimetype,
+      hasEditedRects: typeof editedRects === 'string',
+      editedRectsLength: editedRects?.length ?? 0,
+      editedRectsPreview: editedRects?.slice(0, 500) ?? null,
+      hasDegradedAnnotationIds: typeof degradedAnnotationIds === 'string',
+      degradedAnnotationIdsLength: degradedAnnotationIds?.length ?? 0,
+      degradedAnnotationIdsPreview:
+        degradedAnnotationIds?.slice(0, 500) ?? null,
+    });
+
+    return this.documentService.editPdf(
+      documentId,
+      file.buffer,
+      req.user._id.toString(),
+      editedRects,
+      degradedAnnotationIds,
+    );
   }
 
   // Lấy danh sách
