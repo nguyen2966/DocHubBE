@@ -26,8 +26,8 @@ import { InvitationAction } from 'src/common/constants/enum';
 import { OptionalAuth } from 'src/common/decorators/optional-auth.decorator';
 import { RequireWorkspacePermission } from 'src/modules-system/permissions/decorators/require-workspace-permission.decorator';
 import { WorkspacePermissionGuard } from 'src/modules-system/permissions/guards/workspace-permission.guard';
-import { PaginationResponseInterceptor } from 'src/common/interceptors/paginated.interceptor';
-import { CursorPaginationDto } from './dto/workspace-list.dto';
+import { PagePaginationResponseInterceptor } from 'src/common/interceptors/page-paginated.interceptor';
+import { WorkspaceListQueryDto } from './dto/workspace-list.dto';
 
 @Controller('workspaces')
 export class WorkspaceController {
@@ -119,10 +119,10 @@ export class WorkspaceController {
   }
 
   @Get()
-  @UseInterceptors(PaginationResponseInterceptor)
+  @UseInterceptors(PagePaginationResponseInterceptor)
   findAll(
     @Req() req: Request,
-    @Query() query: CursorPaginationDto,
+    @Query() query: WorkspaceListQueryDto,
   ) {
     return this.workspaceService.findAllByUser(
       req.user!._id.toString(),

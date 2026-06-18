@@ -1,8 +1,8 @@
-import { ApiPropertyOptional } from "@nestjs/swagger";
-import { IsOptional, IsInt, Min, Max } from "class-validator";
-import { Type } from "class-transformer";
+import { ApiPropertyOptional } from '@nestjs/swagger'
+import { Type } from 'class-transformer'
+import { IsInt, IsOptional, Max, Min } from 'class-validator'
 
-export class WorkspaceListQueryDto {
+export class DocumentListQueryDto {
   @ApiPropertyOptional({ default: 1 })
   @IsOptional()
   @Type(() => Number)

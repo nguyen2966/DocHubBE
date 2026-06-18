@@ -1,0 +1,353 @@
+You are working on the DocHubBE NestJS backend.
+
+Goal: Refactor only this API:
+
+```txt
+GET /workspaces/:workspaceId/documents
+```
+
+to use the same page-based paginated response format as Activity logs and the already-updated workspace list API.
+
+Do not modify workspace pagination. Workspace is already done.
+
+============================================================
+REFERENCE FORMAT
+================
+
+Activity logs already use page-based pagination.
+
+The service returns:
+
+```ts
+{
+  items,
+  page,
+  limit,
+  totalItems,
+  totalPages,
+  hasNextPage,
+  hasPreviousPage,
+}
+```
+
+Then `PagePaginationResponseInterceptor` converts it into:
+
+```ts
+{
+  data: items,
+  meta: {
+    page,
+    limit,
+    totalItems,
+    totalPages,
+    hasNextPage,
+    hasPreviousPage,
+  }
+}
+```
+
+Use this exact pattern for `GET /workspaces/:workspaceId/documents`.
+
+============================================================
+FILES TO UPDATE
+===============
+
+Inspect and update only document-related backend files:
+
+```txt
+src/modules-api/document/document.controller.ts
+src/modules-api/document/document.service.ts
+src/modules-api/document/dto/*
+src/common/interceptors/page-paginated.interceptor.ts
+```
+
+Do not modify:
+
+* workspace controller
+* workspace service
+* workspace DTOs
+* activity logs
+* frontend code
+
+============================================================
+TASK 1 — CREATE DOCUMENT LIST QUERY DTO
+=======================================
+
+Create this file if it does not exist:
+
+```txt
+src/modules-api/document/dto/document-list-query.dto.ts
+```
+
+Content:
+
+```ts
+import { ApiPropertyOptional } from '@nestjs/swagger'
+import { Type } from 'class-transformer'
+import { IsInt, IsOptional, Max, Min } from 'class-validator'
+
+export class DocumentListQueryDto {
+  @ApiPropertyOptional({ default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number
+
+  @ApiPropertyOptional({ default: 12 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  limit?: number
+}
+```
+
+============================================================
+TASK 2 — UPDATE DOCUMENT SERVICE
+================================
+
+Update `DocumentService.findByWorkspace`.
+
+Current problem:
+
+* It currently returns a plain array of documents.
+* It needs to return a page-paginated service result.
+
+Expected signature:
+
+```ts
+async findByWorkspace(
+  workspaceId: string,
+  options: {
+    page?: number
+    limit?: number
+  } = {},
+)
+```
+
+Pagination logic:
+
+```ts
+const page = options.page ?? 1
+const limit = Math.min(options.limit ?? 12, 50)
+const skip = (page - 1) * limit
+```
+
+Use the current existing filter behavior. At minimum:
+
+```ts
+const query = {
+  workspaceId: toObjectId(workspaceId),
+}
+```
+
+Important:
+
+* If the current implementation already filters out soft-deleted documents, preserve that filter.
+* Do not invent a new soft-delete filter if the existing code does not use one.
+
+Fetch documents and total count in parallel:
+
+```ts
+const [documents, totalItems] = await Promise.all([
+  this.documentModel
+    .find(query)
+    .populate('ownerId', 'fullName email avatarUrl')
+    .sort({ updatedAt: -1, _id: -1 })
+    .skip(skip)
+    .limit(limit)
+    .lean(),
+
+  this.documentModel.countDocuments(query),
+])
+```
+
+If the current code already has a different `populate`, keep the existing behavior unless it is clearly incomplete.
+
+Compute:
+
+```ts
+const totalPages = Math.ceil(totalItems / limit)
+```
+
+Return exactly:
+
+```ts
+return {
+  items: documents,
+  page,
+  limit,
+  totalItems,
+  totalPages,
+  hasNextPage: page < totalPages,
+  hasPreviousPage: page > 1,
+}
+```
+
+Important:
+
+* Do not return `documents` directly.
+* Do not return `{ data, meta }` from the service.
+* Do not use cursor pagination.
+* Do not return `nextCursor`.
+* Do not return `hasMore`.
+
+============================================================
+TASK 3 — UPDATE DOCUMENT CONTROLLER
+===================================
+
+Update the endpoint:
+
+```txt
+GET /workspaces/:workspaceId/documents
+```
+
+It should use:
+
+```ts
+@UseInterceptors(PagePaginationResponseInterceptor)
+```
+
+Import:
+
+```ts
+import { PagePaginationResponseInterceptor } from 'src/common/interceptors/page-paginated.interceptor'
+import { DocumentListQueryDto } from './dto/document-list-query.dto'
+```
+
+Also ensure `Query` and `UseInterceptors` are imported from `@nestjs/common`, without duplicate imports.
+
+The controller method should conceptually be:
+
+```ts
+@Get()
+@RequireWorkspacePermission('workspace:view')
+@UseInterceptors(PagePaginationResponseInterceptor)
+async findAll(
+  @Param('workspaceId') workspaceId: string,
+  @Req() req: Request,
+  @Query() query: DocumentListQueryDto,
+) {
+  const userId = req.user?._id.toString()
+
+  const result = await this.documentService.findByWorkspace(
+    workspaceId,
+    query,
+  )
+
+  const documents = result.items
+
+  if (!documents.length) {
+    return {
+      ...result,
+      items: [],
+    }
+  }
+
+  const docIds = documents.map((doc) => doc._id.toString())
+
+  const permissionsMap =
+    await this.permissionsService.getBulkDocumentPermissions(
+      userId as string,
+      workspaceId,
+      docIds,
+    )
+
+  return {
+    ...result,
+    items: documents.map((doc) => ({
+      ...doc,
+      permissions: permissionsMap[doc._id.toString()] || [],
+    })),
+  }
+}
+```
+
+Important:
+
+* Preserve existing permission enrichment behavior.
+* Preserve `@RequireWorkspacePermission('workspace:view')`.
+* Preserve existing guards.
+* The controller should return `items`, not `data`.
+* Let `PagePaginationResponseInterceptor` convert `items` to `data`.
+
+============================================================
+EXPECTED FINAL RESPONSE
+=======================
+
+Request:
+
+```txt
+GET /workspaces/:workspaceId/documents?page=1&limit=12
+```
+
+Expected response:
+
+```json
+{
+  "data": [
+    {
+      "_id": "...",
+      "workspaceId": "...",
+      "title": "...",
+      "sourceType": "file_upload",
+      "ownerId": {
+        "_id": "...",
+        "fullName": "...",
+        "email": "..."
+      },
+      "processingStatus": "processed",
+      "permissions": [
+        "document:view",
+        "document:edit"
+      ],
+      "createdAt": "...",
+      "updatedAt": "..."
+    }
+  ],
+  "meta": {
+    "page": 1,
+    "limit": 12,
+    "totalItems": 24,
+    "totalPages": 2,
+    "hasNextPage": true,
+    "hasPreviousPage": false
+  }
+}
+```
+
+============================================================
+DO NOT CHANGE
+=============
+
+Do not modify:
+
+* `GET /workspaces`
+* workspace controller/service/DTOs
+* activity logs
+* frontend code
+* document detail endpoint
+* document create/upload/edit/delete APIs
+* permission service behavior
+* `PagePaginationResponseInterceptor`
+
+============================================================
+QUALITY REQUIREMENTS
+====================
+
+After changes:
+
+* TypeScript should compile.
+* No unused imports.
+* Existing document permission enrichment should remain intact.
+* Existing document sorting should be stable.
+* Existing document filtering behavior should be preserved.
+* `GET /workspaces/:workspaceId/documents` should now match the same page-based paginated format as Activity logs.
+* The API must not return cursor fields:
+
+  * no `nextCursor`
+  * no `hasMore`
+
+Please implement backend changes for documents only.

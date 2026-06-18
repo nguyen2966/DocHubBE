@@ -215,34 +215,33 @@ export class WorkspaceService implements OnModuleInit {
   async findAllByUser(
     userId: string,
     options: {
-      cursor?: string
+      page?: number
       limit?: number
     } = {},
   ) {
-    const limit = Math.min(options.limit ?? 20, 50)
+    const page = options.page ?? 1
+    const limit = Math.min(options.limit ?? 12, 50)
+    const skip = (page - 1) * limit
 
     const query: any = {
       userId: toObjectId(userId),
       isDeleted: false
     }
 
-    if (options.cursor) {
-      query._id = { $lt: toObjectId(options.cursor) }
-    }
-
-    const memberships = await this.memberModel
-      .find(query)
-      .sort({ _id: -1 })
-      .limit(limit + 1)
-      .populate('workspaceId')
-      .populate('roleId', 'name scope')
-      .lean()
-
-    const hasMore = memberships.length > limit
-    const pageItems = hasMore ? memberships.slice(0, limit) : memberships
+    const [memberships, totalItems] = await Promise.all([
+      this.memberModel
+        .find(query)
+        .sort({ _id: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('workspaceId')
+        .populate('roleId', 'name scope')
+        .lean(),
+      this.memberModel.countDocuments(query),
+    ])
 
     const workspaceIds = toObjectIds(
-      pageItems
+      memberships
         .map((m) => (m.workspaceId as any)?._id)
         .filter(Boolean),
     )
@@ -269,8 +268,10 @@ export class WorkspaceService implements OnModuleInit {
       ]),
     )
 
+    const totalPages = Math.ceil(totalItems / limit)
+
     return {
-      items: pageItems.map((m) => {
+      items: memberships.map((m) => {
         const workspace = m.workspaceId as any
         const role = m.roleId as any
         const workspaceId = toStringId(workspace._id)
@@ -285,11 +286,12 @@ export class WorkspaceService implements OnModuleInit {
           },
         }
       }),
-      nextCursor:
-        hasMore && pageItems.length > 0
-          ? toStringId(pageItems[pageItems.length - 1]._id)
-          : null,
-      hasMore,
+      page,
+      limit,
+      totalItems,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
     }
   }
 
