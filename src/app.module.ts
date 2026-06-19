@@ -24,6 +24,7 @@ import { StorageModule } from './modules-system/storage/storage.module';
 import { WebsocketModule } from './modules-system/websocket/websocket.module';
 import { ShareDocumentModule } from './modules-api/share-document/share-document.module';
 import { MySharedDocumentsModule } from './modules-api/my-shared-documents/my-shared-documents.module';
+import { DocumentSearchModule } from './modules-api/document-search/document-search.module';
 
 @Module({
   imports: [AuthModule,
@@ -55,7 +56,8 @@ import { MySharedDocumentsModule } from './modules-api/my-shared-documents/my-sh
             StorageModule,
             WebsocketModule,
             ShareDocumentModule,
-            MySharedDocumentsModule
+            MySharedDocumentsModule,
+            DocumentSearchModule
           ],
   controllers: [AppController],
   providers: [AppService,
