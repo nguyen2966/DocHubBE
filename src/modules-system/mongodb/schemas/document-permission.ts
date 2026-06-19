@@ -23,3 +23,4 @@ export const DocumentPermissionSchema = SchemaFactory.createForClass(DocumentPer
 
 DocumentPermissionSchema.index({ documentId: 1, userId: 1 }, { unique: true });
 DocumentPermissionSchema.index({ documentId: 1 });
+DocumentPermissionSchema.index({ userId: 1, role: 1, documentId: 1 });

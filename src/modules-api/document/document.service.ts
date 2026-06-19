@@ -503,12 +503,42 @@ export class DocumentService {
     return { ...doc, pdfFileUrl };
   }
 
-  async findByWorkspace(workspaceId: string) {
-    return this.documentModel
-      .find({ workspaceId: toObjectId(workspaceId) })
-      .populate('ownerId', 'fullName')
-      .sort({ updatedAt: -1 })
-      .lean();
+  async findByWorkspace(
+    workspaceId: string,
+    options: {
+      page?: number
+      limit?: number
+    } = {},
+  ) {
+    const page = options.page ?? 1
+    const limit = Math.min(options.limit ?? 12, 50)
+    const skip = (page - 1) * limit
+    const query = {
+      workspaceId: toObjectId(workspaceId),
+    }
+
+    const [documents, totalItems] = await Promise.all([
+      this.documentModel
+        .find(query)
+        .populate('ownerId', 'fullName email avatarUrl')
+        .sort({ updatedAt: -1, _id: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      this.documentModel.countDocuments(query),
+    ])
+
+    const totalPages = Math.ceil(totalItems / limit)
+
+    return {
+      items: documents,
+      page,
+      limit,
+      totalItems,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+    }
   }
 
   async rename(

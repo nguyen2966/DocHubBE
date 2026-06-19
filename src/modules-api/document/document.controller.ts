@@ -1,7 +1,7 @@
 import {
   Controller, Get, Post, Patch, Delete,
   Param, Body, UseGuards, Req, UploadedFile, UseInterceptors,
-  BadRequestException,
+  BadRequestException, Query,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { WorkspacePermissionGuard } from '../../modules-system/permissions/guards/workspace-permission.guard';
@@ -16,6 +16,8 @@ import { RenameDocumentDto } from './dto/rename-document.dto';
 import { type Request } from 'express';
 import { PermissionsService } from 'src/modules-system/permissions/permissions.service';
 import { UploadJobService } from './upload-job.service';
+import { PagePaginationResponseInterceptor } from 'src/common/interceptors/page-paginated.interceptor';
+import { DocumentListQueryDto } from './dto/document-list-query.dto';
 
 @Controller('workspaces/:workspaceId/documents')
 @UseGuards(WorkspacePermissionGuard)
@@ -145,14 +147,26 @@ export class DocumentController {
   // Lấy danh sách
   @Get()
   @RequireWorkspacePermission('workspace:view')
-  async findAll(@Param('workspaceId') workspaceId: string, @Req() req: Request) {
+  @UseInterceptors(PagePaginationResponseInterceptor)
+  async findAll(
+    @Param('workspaceId') workspaceId: string,
+    @Req() req: Request,
+    @Query() query: DocumentListQueryDto,
+  ) {
     const userId = req.user?._id.toString();
 
     // 1. Lấy danh sách documents gốc từ service
-    const documents = await this.documentService.findByWorkspace(workspaceId);
+    const result = await this.documentService.findByWorkspace(
+      workspaceId,
+      query,
+    );
+    const documents = result.items;
 
-    if (!documents || documents.length === 0) {
-      return [];
+    if (!documents.length) {
+      return {
+        ...result,
+        items: [],
+      };
     }
 
     // 2. Gom toàn bộ Document ID lại thành mảng
@@ -166,10 +180,13 @@ export class DocumentController {
     );
 
     // 4. Map data trả về cho Frontend
-    return documents.map(doc => ({
-      ...doc,
-      permissions: permissionsMap[doc._id.toString()] || [],
-    }));
+    return {
+      ...result,
+      items: documents.map(doc => ({
+        ...doc,
+        permissions: permissionsMap[doc._id.toString()] || [],
+      })),
+    };
   }
 
   // Xem document
