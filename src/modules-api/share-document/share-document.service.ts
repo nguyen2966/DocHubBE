@@ -203,13 +203,13 @@ export class ShareDocumentService {
   async searchUsersWithContext(
     documentId: string,
     workspaceId: string,
-    email: string,
+    searchText?: string,
   ) {
     const documentObjectId = toObjectId(documentId);
     const workspaceObjectId = toObjectId(workspaceId);
-    const keyword = email?.trim();
+    const keyword = searchText?.trim();
 
-    if (!keyword || keyword.length < 2) {
+    if (!keyword) {
       return { results: [] };
     }
 
@@ -224,11 +224,14 @@ export class ShareDocumentService {
 
     const ownerId = toStringId((document as any).ownerId);
     const normalizedEmail = this.normalizeEmail(keyword);
-    const escapedKeyword = this.escapeRegex(normalizedEmail);
+    const escapedKeyword = this.escapeRegex(keyword);
 
     const users = await this.userModel
       .find({
-        email: { $regex: escapedKeyword, $options: 'i' },
+        $or: [
+          { email: { $regex: escapedKeyword, $options: 'i' } },
+          { fullName: { $regex: escapedKeyword, $options: 'i' } },
+        ],
       })
       .select('_id fullName email avatarUrl')
       .limit(10)

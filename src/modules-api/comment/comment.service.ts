@@ -19,6 +19,8 @@ import {
 } from './dto/create-comment.dto'
 import { UpdateCommentDto } from './dto/update-comment.dto'
 
+const COMMENT_USER_SELECT = 'fullName email avatarUrl'
+
 @Injectable()
 export class CommentService {
   constructor(
@@ -44,6 +46,9 @@ export class CommentService {
         status: 'active',
       })
       .sort({ createdAt: -1 })
+      .populate('createdBy', COMMENT_USER_SELECT)
+      .populate('resolvedBy', COMMENT_USER_SELECT)
+      .populate('deletedBy', COMMENT_USER_SELECT)
       .lean()
 
     if (!annotations.length) return []
@@ -55,6 +60,8 @@ export class CommentService {
         status: { $in: ['active', 'deleted'] },
       })
       .sort({ createdAt: 1 })
+      .populate('authorId', COMMENT_USER_SELECT)
+      .populate('deletedBy', COMMENT_USER_SELECT)
       .lean()
 
     const commentsByAnnotation = this.groupNestedCommentsByAnnotation(comments)
@@ -112,7 +119,7 @@ export class CommentService {
 
     return {
       ...this.serializeAnnotation(annotation.toObject()),
-      comments: [{ ...comment.toObject(), replies: [] }],
+      comments: [{ ...(await this.serializeComment(comment)), replies: [] }],
     }
   }
 
@@ -167,7 +174,7 @@ export class CommentService {
 
     await this.touchAnnotation(annotationObjectId)
 
-    return comment
+    return this.serializeComment(comment)
   }
 
   async updateComment(
@@ -204,7 +211,7 @@ export class CommentService {
 
     await this.touchAnnotation(comment.annotationId)
 
-    return comment
+    return this.serializeComment(comment)
   }
 
   async deleteComment(
@@ -373,6 +380,9 @@ export class CommentService {
         patch,
         { new: true },
       )
+      .populate('createdBy', COMMENT_USER_SELECT)
+      .populate('resolvedBy', COMMENT_USER_SELECT)
+      .populate('deletedBy', COMMENT_USER_SELECT)
       .lean()
 
     if (!annotation) throw new NotFoundException('Annotation not found')
@@ -420,6 +430,15 @@ export class CommentService {
       { _id: annotationId },
       { updatedAt: new Date() },
     )
+  }
+
+  private async serializeComment(comment: any) {
+    await comment.populate([
+      { path: 'authorId', select: COMMENT_USER_SELECT },
+      { path: 'deletedBy', select: COMMENT_USER_SELECT },
+    ])
+
+    return comment.toObject()
   }
 
   private groupNestedCommentsByAnnotation(comments: any[]) {

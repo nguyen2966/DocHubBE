@@ -42,12 +42,13 @@ export class ShareDocumentController {
   searchUsers(
     @Param('documentId') documentId: string,
     @Param('workspaceId') workspaceId: string,
-    @Query('email') email: string,
+    @Query('email') email?: string,
+    @Query('q') q?: string,
   ) {
     return this.shareDocumentService.searchUsersWithContext(
       documentId,
       workspaceId,
-      email,
+      email ?? q,
     );
   }
 

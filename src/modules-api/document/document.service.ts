@@ -632,7 +632,14 @@ export class DocumentService {
       const existing = await this.documentModel.findOne(query).lean();
       if (!existing) return candidate;
       suffix++;
-      candidate = `${title} (${suffix})`;
+      candidate = this.withDuplicateTitleSuffix(title, suffix);
     }
+  }
+
+  private withDuplicateTitleSuffix(title: string, suffix: number) {
+    const suffixText = ` (${suffix})`
+    const baseMaxLength = 255 - suffixText.length
+
+    return `${title.slice(0, baseMaxLength).trimEnd()}${suffixText}`
   }
 }
