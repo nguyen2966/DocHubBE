@@ -56,10 +56,6 @@ export class WorkspaceController {
     const userId =
       (req as any).user?._id?.toString();
 
-    console.log('controller handler hit')
-    console.log('req.user:', (req as any).user)
-    console.log('req.cookies:', req.cookies)
-
     const result =
       await this.workspaceService.handleInvitationLink(
         token,
@@ -82,9 +78,14 @@ export class WorkspaceController {
           `${APP_CLIENT_URL}/invitations/${result.token}/accept`,
         );
 
+      case InvitationAction.VERIFY_REQUIRED:
+        return res.redirect(
+          `${APP_CLIENT_URL}/verify-email?email=${encodeURIComponent(result.email ?? '')}&reason=verify_required`,
+        );
+
       case InvitationAction.ACCEPTED:
         return res.redirect(
-          `${APP_CLIENT_URL}/workspaces/${result.workspaceId}`,
+          `${APP_CLIENT_URL}/workspaces/${result.workspaceId}/documents`,
         );
     }
   }

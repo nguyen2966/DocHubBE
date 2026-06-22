@@ -758,6 +758,37 @@ export class WorkspaceService implements OnModuleInit {
    * Registered + chưa login: redirect → FE login page kèm ?next=... để sau login FE gọi POST accept
    */
 
+  async validateInvitationForSignup(
+    invitationToken: string,
+    email: string,
+  ): Promise<void> {
+    const invitation = await this.invitationModel
+      .findOne({ token: invitationToken })
+      .lean()
+
+    if (!invitation) {
+      throw new BadRequestException('Invitation does not exist')
+    }
+
+    if (invitation.status !== 'pending') {
+      throw new BadRequestException('Invitation is no longer pending')
+    }
+
+    if (invitation.expiresAt < new Date()) {
+      await this.invitationModel.updateOne(
+        { token: invitationToken },
+        { status: 'expired' },
+      )
+      throw new BadRequestException('Invitation has expired')
+    }
+
+    if (invitation.invitedEmail.toLowerCase() !== email.toLowerCase()) {
+      throw new ForbiddenException(
+        'Signup email does not match invitation email',
+      )
+    }
+  }
+
   async handleInvitationLink(
     token: string,
     userId?: string,
@@ -796,6 +827,13 @@ export class WorkspaceService implements OnModuleInit {
       return {
         action: InvitationAction.SIGN_UP,
         token,
+      };
+    }
+
+    if (!existingUser.isEmailVerified) {
+      return {
+        action: InvitationAction.VERIFY_REQUIRED,
+        email: existingUser.email,
       };
     }
 

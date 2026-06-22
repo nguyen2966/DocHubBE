@@ -8,7 +8,7 @@ import {
   SendVerificationEmailJob,
   SendWorkspaceInvitationEmailJob
 } from './email.job'
-import { MAIL_FROM_ADDRESS, MAIL_FROM_NAME, SMTP_HOST, SMTP_PASS, SMTP_PORT, SMTP_SECURE, SMTP_USER } from 'src/common/constants/app.constants'
+import { EMAIL_VERIFY_TTL_MINUTES, MAIL_FROM_ADDRESS, MAIL_FROM_NAME, SMTP_HOST, SMTP_PASS, SMTP_PORT, SMTP_SECURE, SMTP_USER } from 'src/common/constants/app.constants'
 
 @Processor(EMAIL_QUEUE)
 export class EmailProcessor extends WorkerHost {
@@ -53,11 +53,11 @@ export class EmailProcessor extends WorkerHost {
         subject: 'Verify your DocHub account',
         html: `
           <p>Hi,</p>
-          <p>Click the button bellow to verify your account:</p>
+          <p>Click the button below to verify your account:</p>
           <a href="${data.verificationUrl}">
             <button style="background-color:green;color:white;padding:10px 10px">Verify</button>
           </a>
-          <p>The link is active in 60 minutes.</p>
+          <p>The link is active in ${EMAIL_VERIFY_TTL_MINUTES ?? 60} minutes.</p>
         `,
       })
       this.logger.log(`Verification email sent to ${data.to}`)
