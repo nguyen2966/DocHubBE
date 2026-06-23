@@ -5,12 +5,11 @@ import { EmailModule } from 'src/modules-system/email/email.module';
 import { OptionalAuthGuard } from 'src/common/guards/option.guard';
 import { TokenModule } from 'src/modules-system/token/token.module';
 import { PermissionsModule } from 'src/modules-system/permissions/permissions.module';
-import { PermissionsService } from 'src/modules-system/permissions/permissions.service';
 import { ActivityModule } from '../activity/activity.module';
 
 @Module({
   imports:[EmailModule, TokenModule, PermissionsModule, ActivityModule],
   controllers: [WorkspaceController],
-  providers: [WorkspaceService, OptionalAuthGuard, PermissionsService],
+  providers: [WorkspaceService, OptionalAuthGuard],
 })
 export class WorkspaceModule {}
