@@ -12,6 +12,22 @@ export class RedisService {
     return this.redis.get(key);
   }
 
+  async getDel(key: string): Promise<string | null> {
+    const getDel = (this.redis as any).getdel;
+
+    if (typeof getDel === 'function') {
+      return getDel.call(this.redis, key);
+    }
+
+    const result = await this.redis.eval(
+      "local value = redis.call('GET', KEYS[1]); if value then redis.call('DEL', KEYS[1]); end; return value",
+      1,
+      key,
+    );
+
+    return typeof result === 'string' ? result : null;
+  }
+
   async set(
     key: string,
     value: string,
@@ -53,6 +69,18 @@ export class RedisService {
     key: string,
   ): Promise<T | null> {
     const data = await this.get(key);
+
+    if (!data) {
+      return null;
+    }
+
+    return JSON.parse(data) as T;
+  }
+
+  async getDelJson<T>(
+    key: string,
+  ): Promise<T | null> {
+    const data = await this.getDel(key);
 
     if (!data) {
       return null;

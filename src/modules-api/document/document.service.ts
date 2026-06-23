@@ -267,14 +267,25 @@ export class DocumentService {
 
     // Overwrite the file at the existing storage key
     await this.storage.overwrite(doc.pdfStorageKey, fileBuffer, 'application/pdf');
-    await this.degradeAnnotationsByIds(
-      documentObjectId,
-      parsedAnnotationIds,
-    )
-    await this.degradeOverlappingAnnotations(
-      documentObjectId,
-      parsedEditedRects,
-    )
+    if (parsedAnnotationIds.length > 0) {
+      console.log(
+        '[PDF_EDIT_DEBUG] using explicit degraded annotation ids; skipping overlap fallback',
+      )
+      await this.degradeAnnotationsByIds(
+        documentObjectId,
+        parsedAnnotationIds,
+      )
+    } else if (parsedEditedRects.length > 0) {
+      console.log(
+        '[PDF_EDIT_DEBUG] using edited rect fallback because no explicit annotation ids',
+      )
+      await this.degradeOverlappingAnnotations(
+        documentObjectId,
+        parsedEditedRects,
+      )
+    } else {
+      console.log('[PDF_EDIT_DEBUG] no annotation degradation input')
+    }
 
     // Re-extract text preview from the edited PDF via background queue
     await this.documentQueue.add('extract-pdf', {

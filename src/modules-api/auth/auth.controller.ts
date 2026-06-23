@@ -1,21 +1,26 @@
 import {
-  Controller,
-  Post,
   Body,
+  Controller,
   Get,
+  Post,
   Query,
   Req,
   Res,
+  UnauthorizedException,
 } from '@nestjs/common'
-import { type Response, type Request } from 'express'
+import { type Request, type Response } from 'express'
 import { AuthService } from './auth.service'
 import { RegisterDto } from './dto/register.dto'
 import { LoginDto } from './dto/login.dto'
 import { Public } from 'src/common/decorators/public.decorator'
 import { ResendVerificationDto } from './dto/resend-verification.dto'
-import { ACCESS_TOKEN_COOKIE_OPTIONS, REFRESH_TOKEN_COOKIE_OPTIONS } from 'src/common/constants/cookie.constants'
+import { VerifyEmailDto } from './dto/verify-email.dto'
+import {
+  ACCESS_TOKEN_COOKIE_OPTIONS,
+  REFRESH_TOKEN_COOKIE_OPTIONS,
+  SIGNUP_NONCE_COOKIE_OPTIONS,
+} from 'src/common/constants/cookie.constants'
 import { APP_CLIENT_URL } from 'src/common/constants/app.constants'
-
 
 @Controller('auth')
 export class AuthController {
@@ -23,110 +28,126 @@ export class AuthController {
 
   @Post('register')
   @Public()
-  async register(@Body() dto: RegisterDto) {
-    return this.authService.register(dto)
+  async register(
+    @Body() dto: RegisterDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.authService.register(dto)
+
+    res.cookie(
+      'signupNonce',
+      result.signupNonce,
+      SIGNUP_NONCE_COOKIE_OPTIONS,
+    )
+
+    return { message: result.message }
   }
 
-  // @Public()
-  // @Get('verify-email')
-  // async verifyEmail(
-  //   @Query('token') token: string,
-  //   @Req() req: Request,
-  //   @Res() res: Response,
-  // ) {
-  //   try {
-  //     const deviceInfo = {
-  //       userAgent: req.headers['user-agent'] ?? '',
-  //       ipAddress: req.ip ?? '',
-  //     }
-  //     const result = await this.authService.verifyEmail(token, deviceInfo);
-  //     res.cookie('accessToken', result.accessToken, ACCESS_TOKEN_COOKIE_OPTIONS);
-  //     res.cookie('refreshToken', result.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS);
-
-  //     return res.redirect(`${APP_CLIENT_URL}/welcome?status=success`)
-  //   } catch {
-  //     return res.redirect(`${APP_CLIENT_URL}/welcome?status=error`)
-  //   }
-  // }
   @Public()
   @Get('verify-email')
-  async verifyEmail(
+  redirectLegacyVerifyEmail(
     @Query('token') token: string,
-    @Req() req: Request,
     @Res() res: Response,
   ) {
-    try {
-      const deviceInfo = {
-        userAgent: req.headers['user-agent'] ?? '',
-        ipAddress: req.ip ?? '',
-      }
-      const result = await this.authService.verifyEmail(token, deviceInfo);
- 
-      res.cookie('accessToken', result.accessToken, ACCESS_TOKEN_COOKIE_OPTIONS);
-      res.cookie('refreshToken', result.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS);
- 
-      // Nếu user được auto-join vào workspace, redirect thẳng vào workspace đó
-      // Nếu không ,redirect về trang welcome như cũ
-      const redirectUrl = result.claimedWorkspaceId
-        ? `${APP_CLIENT_URL}/workspaces/${result.claimedWorkspaceId}`
-        : `${APP_CLIENT_URL}/welcome?status=success`;
- 
-      return res.redirect(redirectUrl);
-    } catch {
-      return res.redirect(`${APP_CLIENT_URL}/welcome?status=error`);
+    const hash = token ? `#token=${encodeURIComponent(token)}` : ''
+
+    return res.redirect(`${APP_CLIENT_URL}/verify-email${hash}`)
+  }
+
+  @Public()
+  @Post('verify-email')
+  async verifyEmail(
+    @Body() dto: VerifyEmailDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const deviceInfo = {
+      userAgent: req.headers['user-agent'] ?? '',
+      ipAddress: req.ip ?? '',
+    }
+    const signupNonce = req.cookies?.signupNonce
+    const result = await this.authService.verifyEmail(
+      dto.token,
+      signupNonce,
+      deviceInfo,
+    )
+
+    res.cookie('accessToken', result.accessToken, ACCESS_TOKEN_COOKIE_OPTIONS)
+    res.cookie('refreshToken', result.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS)
+    res.clearCookie('signupNonce', SIGNUP_NONCE_COOKIE_OPTIONS)
+
+    return {
+      user: result.user,
+      redirectTo: result.redirectTo,
+      sessionStarted: true,
     }
   }
 
   @Post('login')
   @Public()
-  async login(@Body() dto: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+  async login(
+    @Body() dto: LoginDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
     const deviceInfo = {
       userAgent: req.headers['user-agent'] ?? '',
       ipAddress: req.ip ?? '',
     }
-    const result = await this.authService.login(dto, deviceInfo);
-    res.cookie('accessToken', result.accessToken, ACCESS_TOKEN_COOKIE_OPTIONS);
-    res.cookie('refreshToken', result.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS);
+    const result = await this.authService.login(dto, deviceInfo)
 
-    return result;
+    res.cookie('accessToken', result.accessToken, ACCESS_TOKEN_COOKIE_OPTIONS)
+    res.cookie('refreshToken', result.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS)
+
+    return { user: result.user }
   }
 
   @Post('refresh-token')
   @Public()
-  async refreshToken(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+  async refreshToken(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
     const deviceInfo = {
       userAgent: req.headers['user-agent'] ?? '',
       ipAddress: req.ip ?? '',
     }
     const refreshToken = req.cookies?.refreshToken;
+    
     const result = await this.authService.refreshToken(refreshToken, deviceInfo);
+
     res.cookie('accessToken', result.accessToken, ACCESS_TOKEN_COOKIE_OPTIONS);
     res.cookie('refreshToken', result.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS);
 
-    return result;
+    return { message: 'Token refreshed' };
   }
 
   @Post('logout')
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    // JwtAuthGuard đã attach user và decoded token vào req
-    const { jti, exp } = (req as any).tokenPayload;
-    const refreshToken = req.cookies?.refreshToken;
-    const result = await this.authService.logout(jti, exp, refreshToken);
+    const { jti, exp } = (req as any).tokenPayload
+    const refreshToken = req.cookies?.refreshToken
+    const result = await this.authService.logout(jti, exp, refreshToken)
 
-    res.clearCookie('accessToken', ACCESS_TOKEN_COOKIE_OPTIONS);
-    res.clearCookie('refreshToken', REFRESH_TOKEN_COOKIE_OPTIONS);
+    res.clearCookie('accessToken', ACCESS_TOKEN_COOKIE_OPTIONS)
+    res.clearCookie('refreshToken', REFRESH_TOKEN_COOKIE_OPTIONS)
 
-    return result;
+    return result
   }
 
   @Get('me')
   async me(@Req() req: Request) {
-    return { user: req['user'] };
+    return { user: req['user'] }
   }
 
   @Public()
   @Post('resend-verification')
-  async resendVerification(@Body() dto: ResendVerificationDto) {
-    return this.authService.resendVerificationEmail(dto.email)
+  async resendVerification(
+    @Body() dto: ResendVerificationDto,
+    @Req() req: Request,
+  ) {
+    return this.authService.resendVerificationEmail(
+      dto.email,
+      req.cookies?.signupNonce,
+    )
   }
 }

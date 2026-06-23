@@ -1,28 +1,34 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-import * as crypto from 'crypto';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+} from '@nestjs/common'
+import { InjectQueue } from '@nestjs/bullmq'
+import { Queue } from 'bullmq'
+import { InjectModel } from '@nestjs/mongoose'
+import { Model } from 'mongoose'
+import * as crypto from 'crypto'
 
 import {
   EMAIL_QUEUE,
   EmailJobName,
   SendVerificationEmailJob,
-  SendWorkspaceInvitationEmailJob
-} from './email.job';
+  SendWorkspaceInvitationEmailJob,
+} from './email.job'
 
-import { User } from '../mongodb/schemas/users';
-import { RedisService } from '../redis/redis.service';
+import { User } from '../mongodb/schemas/users'
+import { RedisService } from '../redis/redis.service'
 
 import {
-  APP_URL,
+  APP_CLIENT_URL,
   EMAIL_VERIFY_TTL_MINUTES,
-} from 'src/common/constants/app.constants';
+} from 'src/common/constants/app.constants'
 
 interface EmailVerificationPayload {
-  userId: string;
-  email: string;
+  userId: string
+  email: string
+  signupNonceHash: string
+  invitationToken?: string | null
 }
 
 @Injectable()
@@ -41,80 +47,57 @@ export class EmailService {
     return crypto
       .createHash('sha256')
       .update(raw)
-      .digest('hex');
+      .digest('hex')
   }
 
   private getTokenKey(tokenHash: string): string {
-    return `email_verification:${tokenHash}`;
+    return `email_verification:${tokenHash}`
   }
 
   private getUserKey(userId: string): string {
-    return `email_verification_by_user:${userId}`;
+    return `email_verification_by_user:${userId}`
   }
 
   async sendVerificationEmail(
     userId: string,
     email: string,
+    options: {
+      signupNonceHash: string
+      invitationToken?: string | null
+    },
   ): Promise<void> {
-    const ttlSeconds =
-      Number(EMAIL_VERIFY_TTL_MINUTES) * 60;
-
-    const userKey = this.getUserKey(userId);
-
-    /**
-     * Revoke token cũ nếu có
-     */
-    const oldTokenHash =
-      await this.redisService.get(userKey);
+    const ttlSeconds = Number(EMAIL_VERIFY_TTL_MINUTES) * 60
+    const userKey = this.getUserKey(userId)
+    const oldTokenHash = await this.redisService.get(userKey)
 
     if (oldTokenHash) {
       await Promise.all([
-        this.redisService.del(
-          this.getTokenKey(oldTokenHash),
-        ),
+        this.redisService.del(this.getTokenKey(oldTokenHash)),
         this.redisService.del(userKey),
-      ]);
+      ])
     }
 
-    /**
-     * Tạo token mới
-     */
-    const rawToken =
-      crypto.randomBytes(32).toString('hex');
-
-    const tokenHash =
-      this.hashToken(rawToken);
+    const rawToken = crypto.randomBytes(32).toString('hex')
+    const tokenHash = this.hashToken(rawToken)
 
     const payload: EmailVerificationPayload = {
       userId,
       email,
-    };
+      signupNonceHash: options.signupNonceHash,
+      invitationToken: options.invitationToken ?? null,
+    }
 
-    /**
-     * Lưu Redis
-     */
     await Promise.all([
       this.redisService.setJson(
         this.getTokenKey(tokenHash),
         payload,
         ttlSeconds,
       ),
+      this.redisService.set(userKey, tokenHash, ttlSeconds),
+    ])
 
-      this.redisService.set(
-        userKey,
-        tokenHash,
-        ttlSeconds,
-      ),
-    ]);
+    const verificationUrl = `${APP_CLIENT_URL}/verify-email#token=${rawToken}`
 
-    /**
-     * Tạo link verify
-     */
-    const verificationUrl = `${APP_URL}/api/auth/verify-email?token=${rawToken}`;
-
-    /**
-     * Enqueue email
-     */
     await this.emailQueue.add(
       EmailJobName.SEND_VERIFICATION,
       {
@@ -130,104 +113,107 @@ export class EmailService {
         removeOnComplete: true,
         removeOnFail: false,
       },
-    );
+    )
   }
 
-  async verifyEmailToken(
+  async validateAndConsumeEmailVerificationToken(
     rawToken: string,
-  ): Promise<string> {
-    const tokenHash =
-      this.hashToken(rawToken);
-
+    signupNonce: string,
+  ): Promise<{
+    userId: string
+    email: string
+    invitationToken?: string | null
+  }> {
+    const tokenHash = this.hashToken(rawToken)
+    const tokenKey = this.getTokenKey(tokenHash)
     const payload =
-      await this.redisService.getJson<EmailVerificationPayload>(
-        this.getTokenKey(tokenHash),
-      );
+      await this.redisService.getJson<EmailVerificationPayload>(tokenKey)
 
     if (!payload) {
-      throw new BadRequestException(
-        'Invalid or expired verification token',
-      );
+      throw new BadRequestException('Invalid or expired verification token')
     }
 
-    const user =
-      await this.userModel.findById(
-        payload.userId,
-      );
+    const signupNonceHash = this.hashToken(signupNonce)
+
+    if (signupNonceHash !== payload.signupNonceHash) {
+      throw new ForbiddenException(
+        'Open this verification link in the same browser where you signed up',
+      )
+    }
+
+    const consumedPayload =
+      await this.redisService.getDelJson<EmailVerificationPayload>(tokenKey)
+
+    if (
+      !consumedPayload ||
+      consumedPayload.userId !== payload.userId ||
+      consumedPayload.signupNonceHash !== payload.signupNonceHash
+    ) {
+      throw new BadRequestException('Invalid or expired verification token')
+    }
+
+    const user = await this.userModel.findById(consumedPayload.userId)
 
     if (!user) {
-      throw new BadRequestException(
-        'User not found',
-      );
+      throw new BadRequestException('User not found')
     }
 
     if (!user.isEmailVerified) {
-      user.isEmailVerified = true;
-      await user.save();
+      user.isEmailVerified = true
+      await user.save()
     }
 
-    /**
-     * Token dùng một lần
-     */
-    await Promise.all([
-      this.redisService.del(
-        this.getTokenKey(tokenHash),
-      ),
+    await this.redisService.del(this.getUserKey(consumedPayload.userId))
 
-      this.redisService.del(
-        this.getUserKey(payload.userId),
-      ),
-    ]);
-
-    return payload.userId;
+    return {
+      userId: consumedPayload.userId,
+      email: consumedPayload.email,
+      invitationToken: consumedPayload.invitationToken ?? null,
+    }
   }
 
   async resendVerificationEmail(
     userId: string,
+    signupNonce: string,
   ): Promise<void> {
-    const user =
-      await this.userModel.findById(userId);
+    const user = await this.userModel.findById(userId)
 
     if (!user) {
-      throw new BadRequestException(
-        'User not found',
-      );
+      throw new BadRequestException('User not found')
     }
 
     if (user.isEmailVerified) {
-      throw new BadRequestException(
-        'Email already verified',
-      );
+      throw new BadRequestException('Email already verified')
     }
 
     await this.sendVerificationEmail(
       user._id.toString(),
       user.email,
-    );
+      {
+        signupNonceHash: this.hashToken(signupNonce),
+      },
+    )
   }
 
   async revokeVerificationToken(
     userId: string,
   ): Promise<void> {
-    const userKey =
-      this.getUserKey(userId);
-
-    const tokenHash =
-      await this.redisService.get(userKey);
+    const userKey = this.getUserKey(userId)
+    const tokenHash = await this.redisService.get(userKey)
 
     if (!tokenHash) {
-      return;
+      return
     }
 
     await Promise.all([
-      this.redisService.del(
-        this.getTokenKey(tokenHash),
-      ),
+      this.redisService.del(this.getTokenKey(tokenHash)),
       this.redisService.del(userKey),
-    ]);
+    ])
   }
 
-  async sendWorkspaceInvitationEmail(data: SendWorkspaceInvitationEmailJob): Promise<void> {
+  async sendWorkspaceInvitationEmail(
+    data: SendWorkspaceInvitationEmailJob,
+  ): Promise<void> {
     await this.emailQueue.add(
       EmailJobName.SEND_WORKSPACE_INVITATION,
       data,

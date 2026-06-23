@@ -1,353 +1,372 @@
-You are working on the DocHubBE NestJS backend.
+We need to update the DocHub auth + workspace invitation workflow across BE and FE.
 
-Goal: Refactor only this API:
+Goal:
+Implement a safer email verification flow that prevents an attacker who only steals the verification URL from activating the account and starting a session before the real user.
 
-```txt
-GET /workspaces/:workspaceId/documents
-```
+Product requirement:
+- Clicking the verify button in email should still activate the account and start a session for the legitimate user.
+- To satisfy this safely, bind verification auto-login to the browser that started signup using a temporary signup nonce cookie.
+- If the verification token is valid but the signup nonce is missing or mismatched, do NOT verify the user, do NOT consume the token, and do NOT start a session.
 
-to use the same page-based paginated response format as Activity logs and the already-updated workspace list API.
+Also preserve workspace invitation behavior:
+1. Registered user + valid session:
+   - Click Join Workspace email button.
+   - Accept invitation immediately.
+   - Redirect to /workspaces/:workspaceId/documents.
 
-Do not modify workspace pagination. Workspace is already done.
+2. Registered user but signed out:
+   - Click Join Workspace email button.
+   - Redirect to sign in page.
+   - After sign in, accept invitation.
+   - Redirect to /workspaces/:workspaceId/documents.
 
-============================================================
-REFERENCE FORMAT
-================
+3. Unregistered user:
+   - Click Join Workspace email button.
+   - Redirect to /signup?invitationToken=...
+   - Register.
+   - Verify email.
+   - Verification should start session only if signup nonce matches.
+   - After verification/session start, redirect to invited workspace page:
+     /workspaces/:workspaceId/documents
+   - Normal non-invited register should redirect to welcome page.
 
-Activity logs already use page-based pagination.
+Important security model:
+- invitationToken: only controls invite flow; never starts an auth session.
+- email verification token: verifies email; should not start session by itself.
+- signupNonce: proves the current browser initiated the signup; required for verification auto-login.
+- verification token + valid signupNonce = verify account + start session.
+- verification token without signupNonce = reject safely, keep token valid for real browser.
 
-The service returns:
+Files to inspect/modify:
 
-```ts
-{
-  items,
-  page,
-  limit,
-  totalItems,
-  totalPages,
-  hasNextPage,
-  hasPreviousPage,
-}
-```
+BACKEND REPO: DocHubBE
 
-Then `PagePaginationResponseInterceptor` converts it into:
+1. src/modules-api/auth/auth.controller.ts
+Current:
+- POST /auth/register returns authService.register(dto)
+- GET /auth/verify-email currently verifies immediately, sets accessToken/refreshToken cookies, redirects.
+- login and refresh currently return result containing raw tokens after setting cookies.
 
-```ts
-{
-  data: items,
-  meta: {
-    page,
-    limit,
-    totalItems,
-    totalPages,
-    hasNextPage,
-    hasPreviousPage,
+Change:
+- Keep POST /auth/register, but make it set a temporary httpOnly signupNonce cookie returned from authService.register.
+- Replace or deprecate direct GET /auth/verify-email side-effect behavior.
+- Add POST /auth/verify-email:
+  body: { token: string }
+  reads signupNonce from req.cookies.signupNonce
+  calls authService.verifyEmail(token, signupNonce, deviceInfo)
+  if success:
+    set accessToken and refreshToken cookies
+    clear signupNonce cookie
+    return { user, redirectTo, sessionStarted: true }
+  if invalid/missing signupNonce:
+    return 403 or 400 with a clear message, do not consume token.
+- For login and refresh, do not return raw tokens in JSON. Return only { user } for login, and { message: 'Token refreshed' } or similar for refresh.
+
+2. src/modules-api/auth/auth.service.ts
+Current:
+- register(dto) creates user and sends verification email.
+- verifyEmail(rawToken, deviceInfo) verifies token, claims invitations by email, generates token pair, returns claimedWorkspaceId.
+
+Change:
+- register(dto) must:
+  - create user as before
+  - create a random signupNonce
+  - pass signupNonceHash and optional invitationToken to EmailService.sendVerificationEmail(...)
+  - return { message, signupNonce }
+    Controller will store signupNonce in httpOnly cookie.
+- verifyEmail(rawToken, signupNonce, deviceInfo) must:
+  - require signupNonce
+  - validate token + signupNonce via EmailService
+  - only after nonce passes, consume token and mark email verified
+  - claim invitations
+  - generate token pair
+  - return { accessToken, refreshToken, user, redirectTo }
+- redirectTo logic:
+  - if joinedWorkspaceIds[0] exists -> `/workspaces/${id}/documents`
+  - else -> `/welcome?status=success`
+
+3. src/modules-api/auth/dto/register.dto.ts
+Add optional:
+  invitationToken?: string
+
+Validation:
+- optional string
+- should be passed from FE when signup URL has invitationToken.
+
+4. Create src/modules-api/auth/dto/verify-email.dto.ts
+Example:
+  export class VerifyEmailDto {
+    @IsString()
+    @IsNotEmpty()
+    token: string
   }
-}
-```
 
-Use this exact pattern for `GET /workspaces/:workspaceId/documents`.
+5. src/modules-system/email/email.service.ts
+Current:
+- EmailVerificationPayload only has { userId, email }.
+- sendVerificationEmail(userId, email) creates raw token, stores hash in Redis, email link points to `${APP_URL}/api/auth/verify-email?token=${rawToken}`.
+- verifyEmailToken(rawToken) does getJson(), verifies user, saves user, then del() token.
 
-============================================================
-FILES TO UPDATE
-===============
+Change:
+- Extend payload:
+  interface EmailVerificationPayload {
+    userId: string
+    email: string
+    signupNonceHash: string
+    invitationToken?: string | null
+  }
 
-Inspect and update only document-related backend files:
+- Change sendVerificationEmail signature:
+  sendVerificationEmail(userId: string, email: string, options: {
+    signupNonceHash: string
+    invitationToken?: string | null
+  })
 
-```txt
-src/modules-api/document/document.controller.ts
-src/modules-api/document/document.service.ts
-src/modules-api/document/dto/*
-src/common/interceptors/page-paginated.interceptor.ts
-```
+- Build verification URL to frontend, not backend:
+  `${APP_CLIENT_URL}/verify-email#token=${rawToken}`
+  Add APP_CLIENT_URL import if needed.
 
-Do not modify:
+- Add method validateAndConsumeEmailVerificationToken(rawToken, signupNonce): Promise<{ userId, email, invitationToken? }>
+  Required behavior:
+  1. hash rawToken
+  2. read payload from Redis
+  3. if missing -> throw BadRequestException
+  4. hash incoming signupNonce
+  5. compare with payload.signupNonceHash
+  6. if mismatch -> throw ForbiddenException
+     IMPORTANT: do NOT delete token, do NOT verify user.
+  7. if match -> atomically consume token
+  8. mark user.isEmailVerified = true
+  9. delete userKey mapping
+  10. return payload
 
-* workspace controller
-* workspace service
-* workspace DTOs
-* activity logs
-* frontend code
+- Atomic consumption:
+  Add Redis getDel/getDelJson in RedisService and use it, or use a Lua script.
+  Avoid getJson() then del() race.
+  But be careful: do not consume until signup nonce is already validated.
+  Safe sequence:
+    payload = getJson(tokenKey)
+    validate signupNonce
+    consumedPayload = getDelJson(tokenKey)
+    if consumedPayload missing -> throw BadRequestException
+    validate consumedPayload.userId/signupNonceHash still matches
+    delete userKey
+    verify user
+  This prevents consuming the token on nonce mismatch.
 
-============================================================
-TASK 1 — CREATE DOCUMENT LIST QUERY DTO
-=======================================
+6. src/modules-system/redis/redis.service.ts
+Add:
+  getDel(key: string): Promise<string | null>
+  getDelJson<T>(key: string): Promise<T | null>
 
-Create this file if it does not exist:
+If Redis client supports GETDEL, use it.
+If not, implement with Lua script.
 
-```txt
-src/modules-api/document/dto/document-list-query.dto.ts
-```
+7. src/modules-system/email/email.processor.ts
+Current verification email uses data.verificationUrl directly in href and says link active in 60 minutes.
 
-Content:
+Keep template mostly same, but now verificationUrl should point to FE:
+  /verify-email#token=...
+Optionally fix typo "bellow" -> "below".
+If TTL constant is changed, update text accordingly.
 
-```ts
-import { ApiPropertyOptional } from '@nestjs/swagger'
-import { Type } from 'class-transformer'
-import { IsInt, IsOptional, Max, Min } from 'class-validator'
+8. src/common/constants/cookie.constants.ts
+Add cookie options for signupNonce:
+  SIGNUP_NONCE_COOKIE_OPTIONS
+Should be:
+  httpOnly: true
+  secure: production only
+  sameSite: 'lax'
+  path: '/'
+  maxAge same as EMAIL_VERIFY_TTL_MINUTES
+Use clearCookie with same options.
 
-export class DocumentListQueryDto {
-  @ApiPropertyOptional({ default: 1 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  page?: number
+9. src/common/constants/app.constants.ts
+Ensure APP_CLIENT_URL is available to EmailService.
+Currently invitation uses APP_URL backend URL; verification should use APP_CLIENT_URL frontend URL.
 
-  @ApiPropertyOptional({ default: 12 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(50)
-  limit?: number
-}
-```
+10. src/modules-api/workspace/workspace.controller.ts
+Current:
+- SIGN_UP redirects to /signup?invitationToken=...
+- SIGN_IN redirects to /invitations/:token/accept
+- ACCEPTED redirects to /workspaces/:workspaceId
 
-============================================================
-TASK 2 — UPDATE DOCUMENT SERVICE
-================================
+Change:
+- ACCEPTED redirect must be:
+  /workspaces/:workspaceId/documents
 
-Update `DocumentService.findByWorkspace`.
+11. src/modules-api/workspace/workspace.service.ts
+Current:
+- handleInvitationLink branches correctly.
+- acceptInvitation validates invited email matches logged-in user's email.
+- claimPendingInvitations joins all pending invitations by email after verification.
 
-Current problem:
+Keep this behavior but improve:
+- In handleInvitationLink, if existingUser exists but isEmailVerified === false:
+  return a flow that redirects to a verify-required page or signup/verify page, not login, because login rejects unverified users.
+  Minimal acceptable behavior:
+    redirect to `/verify-email?email=${existingUser.email}&reason=verify_required`
+  Better:
+    resend verification email and redirect to /verify-email state is hard from backend, so simple verify-required page is OK.
 
-* It currently returns a plain array of documents.
-* It needs to return a page-paginated service result.
+- For unregistered signup with invitationToken:
+  Add a method validateInvitationForSignup(invitationToken, email) or similar:
+    - invitation exists
+    - status pending
+    - not expired
+    - invitedEmail equals registering email
+  AuthService.register should call this if invitationToken is provided.
+  This prevents using an invitation token with a different email.
+  Do not accept invitation during register; actual join still happens after email verification through claimPendingInvitations.
 
-Expected signature:
+FRONTEND REPO: DocHubFE
 
-```ts
-async findByWorkspace(
-  workspaceId: string,
-  options: {
-    page?: number
-    limit?: number
-  } = {},
-)
-```
+1. src/features/auth/services/auth.service.ts
+Add:
+  verifyEmail(token: string): Promise<AxiosResponse<{ user, redirectTo, sessionStarted }>>
+which POSTs to:
+  /auth/verify-email
+body:
+  { token }
 
-Pagination logic:
+Ensure signup sends invitationToken if present:
+  signup(payload including optional invitationToken)
 
-```ts
-const page = options.page ?? 1
-const limit = Math.min(options.limit ?? 12, 50)
-const skip = (page - 1) * limit
-```
+Also fix resendVerificationEmail if it does not return the api.post promise.
 
-Use the current existing filter behavior. At minimum:
+2. src/features/auth/hooks/useSignup.ts
+Current:
+- reads invitationToken from URL
+- calls authService.signup(values)
+- navigates to /verify-email with state { email, invitationToken }
 
-```ts
-const query = {
-  workspaceId: toObjectId(workspaceId),
-}
-```
+Change:
+- include invitationToken in signup payload:
+  await authService.signup({ ...values, invitationToken })
+- navigate to /verify-email with email state only if needed.
+- The real verification email link will later land on /verify-email#token=...
+
+3. src/features/auth/components/VerifyEmailNotice.tsx
+Current:
+- only shows "check inbox" page and resend button.
+
+Change this component/page to support two modes:
+
+Mode A: no token in URL hash
+- show existing "check your inbox" UI
+- support resend.
+
+Mode B: token exists in URL hash
+- immediately call authService.verifyEmail(token) in useEffect.
+- show "Verifying your account..." while loading.
+- on success:
+  - setAuth(data.user)
+  - navigate(data.redirectTo, { replace: true })
+- on failure due to missing/mismatched signup nonce:
+  - show security message:
+    "For security, please open this verification link in the same browser where you signed up, or sign in after verifying manually."
+  - Do not navigate to welcome success.
+- on invalid/expired token:
+  - show error status and resend option if email is known.
 
 Important:
+- After reading token from hash, remove it from URL if possible:
+  window.history.replaceState(null, '', '/verify-email')
+  But only after storing it in local variable/state.
+- Do not place token in query string.
 
-* If the current implementation already filters out soft-deleted documents, preserve that filter.
-* Do not invent a new soft-delete filter if the existing code does not use one.
+4. src/features/auth/hooks/useLogin.ts
+Current:
+- after invitation accept, navigates to /workspaces/:workspaceId
 
-Fetch documents and total count in parallel:
+Change:
+- navigate to /workspaces/:workspaceId/documents
 
-```ts
-const [documents, totalItems] = await Promise.all([
-  this.documentModel
-    .find(query)
-    .populate('ownerId', 'fullName email avatarUrl')
-    .sort({ updatedAt: -1, _id: -1 })
-    .skip(skip)
-    .limit(limit)
-    .lean(),
+Also keep behavior:
+- if next=/invitations/:token/accept, POST accept invitation after login.
 
-  this.documentModel.countDocuments(query),
-])
-```
+5. src/layouts/AcceptInvitationPage.tsx
+Current:
+- calls /auth/me
+- if logged in, POST /accept-authenticated
+- if 401, redirect to /login?next=/invitations/:token/accept
+- success redirects to /workspaces/:workspaceId/documents
 
-If the current code already has a different `populate`, keep the existing behavior unless it is clearly incomplete.
+This is mostly OK.
+Optional simplification:
+- Use one endpoint POST /workspaces/invitations/:token/accept instead of accept-authenticated, if backend keeps only one.
+Keep current behavior if not refactoring endpoint naming.
 
-Compute:
+6. src/App.tsx
+Keep:
+  /verify-email
+  /invitations/:token/accept
+Ensure /verify-email supports both "check inbox" and "hash token auto verification" modes.
 
-```ts
-const totalPages = Math.ceil(totalItems / limit)
-```
+7. GuestRoute / ProtectedRoute if needed
+Make sure /verify-email remains public.
+Make sure /invitations/:token/accept remains public because it handles both logged-in and logged-out by probing /auth/me.
 
-Return exactly:
+Acceptance criteria:
 
-```ts
-return {
-  items: documents,
-  page,
-  limit,
-  totalItems,
-  totalPages,
-  hasNextPage: page < totalPages,
-  hasPreviousPage: page > 1,
-}
-```
+A. Normal register:
+1. User signs up normally.
+2. BE creates signupNonce cookie.
+3. Email link points to FE /verify-email#token=...
+4. Same browser opens email link.
+5. FE POSTs token to BE.
+6. BE validates token + signupNonce.
+7. BE verifies user and starts session.
+8. FE redirects to /welcome?status=success.
+9. Raw access/refresh tokens are not returned in JSON.
 
-Important:
+B. Attacker steals verification link:
+1. Attacker opens /verify-email#token=... in a different browser.
+2. Attacker has no signupNonce cookie.
+3. BE returns 403 or safe error.
+4. Token is NOT consumed.
+5. User can still open same link from original signup browser and succeed.
 
-* Do not return `documents` directly.
-* Do not return `{ data, meta }` from the service.
-* Do not use cursor pagination.
-* Do not return `nextCursor`.
-* Do not return `hasMore`.
+C. Registered invited user with active session:
+1. Click invitation email.
+2. BE accepts invitation.
+3. Redirect to /workspaces/:workspaceId/documents.
 
-============================================================
-TASK 3 — UPDATE DOCUMENT CONTROLLER
-===================================
+D. Registered invited user signed out:
+1. Click invitation email.
+2. Redirect to /invitations/:token/accept.
+3. FE redirects to /login?next=/invitations/:token/accept.
+4. After login, FE accepts invitation.
+5. Redirect to /workspaces/:workspaceId/documents.
 
-Update the endpoint:
+E. Unregistered invited user:
+1. Click invitation email.
+2. Redirect to /signup?invitationToken=...
+3. Register with same invited email.
+4. BE validates invitationToken belongs to that email.
+5. BE creates signupNonce cookie and sends verification email.
+6. User opens verify email in same browser.
+7. BE validates token + signupNonce.
+8. BE verifies email, claims pending invitation, starts session.
+9. FE redirects to /workspaces/:workspaceId/documents, not welcome.
 
-```txt
-GET /workspaces/:workspaceId/documents
-```
+F. Invalid invitation email mismatch:
+1. User opens /signup?invitationToken=... but registers with a different email.
+2. BE rejects register with clear error.
 
-It should use:
+G. Already registered but unverified invited user:
+1. User clicks invitation email.
+2. Do not send them into login loop.
+3. Show verify-required page or route where they can resend verification.
 
-```ts
-@UseInterceptors(PagePaginationResponseInterceptor)
-```
-
-Import:
-
-```ts
-import { PagePaginationResponseInterceptor } from 'src/common/interceptors/page-paginated.interceptor'
-import { DocumentListQueryDto } from './dto/document-list-query.dto'
-```
-
-Also ensure `Query` and `UseInterceptors` are imported from `@nestjs/common`, without duplicate imports.
-
-The controller method should conceptually be:
-
-```ts
-@Get()
-@RequireWorkspacePermission('workspace:view')
-@UseInterceptors(PagePaginationResponseInterceptor)
-async findAll(
-  @Param('workspaceId') workspaceId: string,
-  @Req() req: Request,
-  @Query() query: DocumentListQueryDto,
-) {
-  const userId = req.user?._id.toString()
-
-  const result = await this.documentService.findByWorkspace(
-    workspaceId,
-    query,
-  )
-
-  const documents = result.items
-
-  if (!documents.length) {
-    return {
-      ...result,
-      items: [],
-    }
-  }
-
-  const docIds = documents.map((doc) => doc._id.toString())
-
-  const permissionsMap =
-    await this.permissionsService.getBulkDocumentPermissions(
-      userId as string,
-      workspaceId,
-      docIds,
-    )
-
-  return {
-    ...result,
-    items: documents.map((doc) => ({
-      ...doc,
-      permissions: permissionsMap[doc._id.toString()] || [],
-    })),
-  }
-}
-```
-
-Important:
-
-* Preserve existing permission enrichment behavior.
-* Preserve `@RequireWorkspacePermission('workspace:view')`.
-* Preserve existing guards.
-* The controller should return `items`, not `data`.
-* Let `PagePaginationResponseInterceptor` convert `items` to `data`.
-
-============================================================
-EXPECTED FINAL RESPONSE
-=======================
-
-Request:
-
-```txt
-GET /workspaces/:workspaceId/documents?page=1&limit=12
-```
-
-Expected response:
-
-```json
-{
-  "data": [
-    {
-      "_id": "...",
-      "workspaceId": "...",
-      "title": "...",
-      "sourceType": "file_upload",
-      "ownerId": {
-        "_id": "...",
-        "fullName": "...",
-        "email": "..."
-      },
-      "processingStatus": "processed",
-      "permissions": [
-        "document:view",
-        "document:edit"
-      ],
-      "createdAt": "...",
-      "updatedAt": "..."
-    }
-  ],
-  "meta": {
-    "page": 1,
-    "limit": 12,
-    "totalItems": 24,
-    "totalPages": 2,
-    "hasNextPage": true,
-    "hasPreviousPage": false
-  }
-}
-```
-
-============================================================
-DO NOT CHANGE
-=============
-
-Do not modify:
-
-* `GET /workspaces`
-* workspace controller/service/DTOs
-* activity logs
-* frontend code
-* document detail endpoint
-* document create/upload/edit/delete APIs
-* permission service behavior
-* `PagePaginationResponseInterceptor`
-
-============================================================
-QUALITY REQUIREMENTS
-====================
-
-After changes:
-
-* TypeScript should compile.
-* No unused imports.
-* Existing document permission enrichment should remain intact.
-* Existing document sorting should be stable.
-* Existing document filtering behavior should be preserved.
-* `GET /workspaces/:workspaceId/documents` should now match the same page-based paginated format as Activity logs.
-* The API must not return cursor fields:
-
-  * no `nextCursor`
-  * no `hasMore`
-
-Please implement backend changes for documents only.
+Implementation notes:
+- Keep code style consistent with current NestJS + React TypeScript style.
+- Do not rewrite unrelated modules.
+- Do not change workspace permission logic.
+- Do not make invitation token start a session.
+- Do not consume verification token when signup nonce is missing/mismatched.
+- Prefer httpOnly cookie for signupNonce.
+- Use SameSite=Lax so the cookie works for normal top-level email-link navigation.
+- Use Secure=true only in production.
+- Make Redis token consumption atomic after nonce validation.
+- Remove token from frontend URL hash after reading it.
