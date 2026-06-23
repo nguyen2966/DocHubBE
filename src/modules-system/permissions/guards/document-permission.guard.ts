@@ -42,8 +42,6 @@ export class DocumentPermissionGuard implements CanActivate {
       ),
     );
 
-    console.log(results);
-
     if (!results.every(Boolean)) {
       throw new ForbiddenException('You do not have permission to perform this action on the document')
     }
