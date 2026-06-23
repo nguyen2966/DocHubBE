@@ -1,4 +1,3 @@
-// src/modules-system/storage/storage-key.util.ts
 import * as path from 'path';
 
 /**

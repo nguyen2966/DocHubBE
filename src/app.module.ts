@@ -39,8 +39,8 @@ import { DocumentSearchModule } from './modules-api/document-search/document-sea
             EmailModule,
             BullModule.forRoot({
               connection: {
-                host: 'localhost',
-                port: 6380,
+                host: REDIS_HOST,
+                port: Number(REDIS_PORT),
               },
             }),
             RedisModule,

@@ -4,6 +4,7 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
 import { ValidationPipe } from '@nestjs/common';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import { APP_CLIENT_URL } from './common/constants/app.constants';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
@@ -16,14 +17,14 @@ async function bootstrap() {
   }));
 
   app.enableCors({
-    origin: 'http://localhost:5173',
+    origin: APP_CLIENT_URL,
     credentials: true,
     exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length'],
   });
 
 
   const config = new DocumentBuilder()
-    .setTitle('Documentation Hub')
+    .setTitle('Folio')
     .setDescription('Centralized UI for API testing')
     .setVersion('1.0')
     .build();
