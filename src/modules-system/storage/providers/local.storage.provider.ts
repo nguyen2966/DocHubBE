@@ -3,7 +3,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import { StorageContract, UploadResult } from '../storage.contract';
-import { LOCAL_STORAGE_ROOT } from 'src/common/constants/app.constants';
+import { APP_URL, LOCAL_STORAGE_ROOT } from 'src/common/constants/app.constants';
 
 @Injectable()
 export class LocalStorageProvider extends StorageContract {
@@ -11,7 +11,7 @@ export class LocalStorageProvider extends StorageContract {
 
   private readonly root: string = LOCAL_STORAGE_ROOT ?? path.join(process.cwd(), 'storage');
 
-  private readonly baseUrl: string = 'http://localhost:3000/storage';
+  private readonly baseUrl: string = `${APP_URL}/storage`;
 
   async upload(key: string, buffer: Buffer, mimeType: string): Promise<UploadResult> {
     const fullPath = this.resolvePath(key);

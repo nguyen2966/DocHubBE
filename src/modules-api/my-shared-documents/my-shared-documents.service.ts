@@ -15,57 +15,84 @@ export class MySharedDocumentsService {
 
   }
 
-  async getSharedWithMeDocuments(userId: string) {
-    const permissions = await this.documentPermissionModel.find({
+  async getSharedWithMeDocuments(
+    userId: string,
+    options: {
+      page?: number
+      limit?: number
+    } = {},
+  ) {
+    const page = options.page ?? 1
+    const limit = Math.min(options.limit ?? 12, 50)
+    const skip = (page - 1) * limit
+    const query = {
       userId: toObjectId(userId),
       role: { $in: ['viewer', 'commenter', 'editor'] },
-    })
-      .populate({
-        path: 'documentId',
-        select:
-          'workspaceId title sourceType ownerId processingStatus pdfFileUrl updatedAt createdAt',
-        populate: [
-          {
-            path: 'ownerId',
-            select: 'fullName email avatarUrl',
-          },
-          {
-            path: 'workspaceId',
-            select: 'name',
-          },
-        ],
-      })
-      .lean();
+    }
 
-    return permissions
-      .filter((permission) => permission.documentId)
-      .map((permission) => {
-        const document = (permission as any).documentId;
-        const workspace = document.workspaceId;
-        const owner = document.ownerId;
+    const [permissions, totalItems] = await Promise.all([
+      this.documentPermissionModel.find(query)
+        .sort({ _id: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate({
+          path: 'documentId',
+          select:
+            'workspaceId title sourceType ownerId processingStatus pdfFileUrl updatedAt createdAt',
+          populate: [
+            {
+              path: 'ownerId',
+              select: 'fullName email avatarUrl',
+            },
+            {
+              path: 'workspaceId',
+              select: 'name',
+            },
+          ],
+        })
+        .lean(),
+      this.documentPermissionModel.countDocuments(query),
+    ]);
 
-        return {
-          _id: toStringId(document._id),
-          workspaceId: toStringId(workspace?._id ?? document.workspaceId),
-          workspaceName: workspace?.name ?? '',
-          title: document.title,
-          sourceType: document.sourceType,
-          processingStatus: document.processingStatus,
-          pdfFileUrl: document.pdfFileUrl,
-          role: permission.role,
-          owner: owner
-            ? {
-              _id: toStringId(owner._id),
-              fullName: owner.fullName,
-              email: owner.email,
-              avatarUrl: owner.avatarUrl ?? null,
-            }
-            : null,
-          sharedAt: (permission as any).createdAt?.toISOString?.() ?? null,
-          updatedAt: document.updatedAt?.toISOString?.() ?? null,
-          createdAt: document.createdAt?.toISOString?.() ?? null,
-        };
-      });
+    const totalPages = Math.ceil(totalItems / limit)
+
+    return {
+      items: permissions
+        .filter((permission) => permission.documentId)
+        .map((permission) => {
+          const document = (permission as any).documentId;
+          const workspace = document.workspaceId;
+          const owner = document.ownerId;
+
+          return {
+            _id: toStringId(document._id),
+            workspaceId: toStringId(workspace?._id ?? document.workspaceId),
+            workspaceName: workspace?.name ?? '',
+            title: document.title,
+            sourceType: document.sourceType,
+            processingStatus: document.processingStatus,
+            pdfFileUrl: document.pdfFileUrl,
+            role: permission.role,
+            owner: owner
+              ? {
+                _id: toStringId(owner._id),
+                fullName: owner.fullName,
+                email: owner.email,
+                avatarUrl: owner.avatarUrl ?? null,
+              }
+              : null,
+            sharedAt: (permission as any).createdAt?.toISOString?.() ?? null,
+            updatedAt: document.updatedAt?.toISOString?.() ?? null,
+            createdAt: document.createdAt?.toISOString?.() ?? null,
+          };
+        }),
+      page,
+      limit,
+      totalItems,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+    };
   }
 
   async getSharedWithMeDocumentDetail(userId: string, documentId: string) {
