@@ -5,7 +5,6 @@ import { AuthModule } from './modules-api/auth/auth.module';
 import { WorkspaceModule } from './modules-api/workspace/workspace.module';
 import { DocumentModule } from './modules-api/document/document.module';
 import { CommentModule } from './modules-api/comment/comment.module';
-import { UploadModule } from './modules-api/upload/upload.module';
 import { ActivityModule } from './modules-api/activity/activity.module';
 import { SearchModule } from './modules-api/search/search.module';
 import { TokenModule } from './modules-system/token/token.module';
@@ -19,7 +18,6 @@ import { ProtectGuard } from './common/guards/protect.guard';
             WorkspaceModule, 
             DocumentModule, 
             CommentModule, 
-            UploadModule, 
             ActivityModule, 
             SearchModule, 
             TokenModule,
