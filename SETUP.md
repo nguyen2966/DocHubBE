@@ -1,4 +1,4 @@
-# DocHub Setup Guide
+# Folio Setup Guide
 
 This setup uses:
 
