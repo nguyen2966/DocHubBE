@@ -501,7 +501,7 @@ export class DocumentService {
     const documentObjectId = toObjectId(documentId)
     const doc = await this.documentModel
       .findById(documentObjectId)
-      .populate('ownerId', 'fullName')
+      .populate('ownerId', 'fullName email avatarUrl')
       .lean();
 
     if (!doc) throw new NotFoundException('Document not found');
@@ -625,7 +625,7 @@ export class DocumentService {
   async getMembers(documentId: string) {
     return this.documentPermissionModel
       .find({ documentId: toObjectId(documentId) })
-      .populate('userId', 'name email avatar')
+      .populate('userId', 'fullName email avatarUrl')
       .lean();
   }
 

@@ -396,7 +396,7 @@ export class WorkspaceService implements OnModuleInit {
 
     return this.memberModel
       .find({ workspaceId: toObjectId(workspaceId), isDeleted: false })
-      .populate('userId', 'fullName email')
+      .populate('userId', 'fullName email avatarUrl')
       .populate('roleId', 'name')
       .lean()
   }
@@ -979,7 +979,7 @@ export class WorkspaceService implements OnModuleInit {
 
     return this.invitationModel
       .find({ workspaceId: toObjectId(workspaceId), status: 'pending' })
-      .populate('invitedBy', 'fullName email')
+      .populate('invitedBy', 'fullName email avatarUrl')
       .lean()
   }
 

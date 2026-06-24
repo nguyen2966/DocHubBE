@@ -20,6 +20,7 @@ type AuthUserResponse = {
   _id: string
   email: string
   fullName: string
+  avatarUrl: string | null
 }
 
 @Injectable()
@@ -44,6 +45,7 @@ export class AuthService {
       _id: user._id.toString(),
       email: user.email,
       fullName: user.fullName,
+      avatarUrl: user.avatarUrl ?? null,
     }
   }
 

@@ -10,7 +10,7 @@ export interface UserSearchResult {
   isRegistered: boolean
   userId?: string
   fullName?: string
-  avatarUrl?: string
+  avatarUrl?: string | null
 }
 
 @Injectable()
@@ -56,6 +56,7 @@ export class SearchService {
       isRegistered: true,
       userId: toStringId(u._id as any),
       fullName: u.fullName ?? undefined,
+      avatarUrl: u.avatarUrl ?? null,
       isMember: memberUserIds ? memberUserIds.has(toStringId(u._id as any)) : undefined,
     }));
   }

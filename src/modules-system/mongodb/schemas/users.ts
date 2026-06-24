@@ -9,6 +9,9 @@ export class User extends Document {
   @Prop({ required: true, lowercase: true })
   email: string
 
+  @Prop({ type:String, default: null })
+  avatarUrl?: string | null
+
   @Prop({ required: true })
   passwordHash: string
 

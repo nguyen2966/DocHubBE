@@ -7,6 +7,7 @@ declare global {
         _id: string
         email: string
         fullName: string
+        avatarUrl?: string | null
         isEmailVerified: boolean
       }
       tokenPayload?: TokenPayload
