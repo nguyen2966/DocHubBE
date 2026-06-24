@@ -6,7 +6,6 @@ import {
   Query,
   Req,
   Res,
-  UnauthorizedException,
 } from '@nestjs/common'
 import { type Request, type Response } from 'express'
 import { AuthService } from './auth.service'
@@ -32,13 +31,13 @@ export class AuthController {
     @Body() dto: RegisterDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const result = await this.authService.register(dto)
+    const result = await this.authService.register(dto);
 
     res.cookie(
       'signupNonce',
       result.signupNonce,
       SIGNUP_NONCE_COOKIE_OPTIONS,
-    )
+    );
 
     return { message: result.message }
   }
