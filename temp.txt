@@ -1,0 +1,150 @@
+Refactor the my-shared-documents module to use PermissionsService consistently, like the normal document module.
+
+Context:
+- MySharedDocumentsService currently queries DocumentPermission directly and manually maps roles to permissions with mapRoleToPermissions().
+- This duplicates permission logic and can become inconsistent with the rest of the app.
+- Normal document detail already relies on PermissionsService to resolve available document permissions.
+- I also made a mistake in PermissionsModule: it exports PermissionsModule instead of PermissionsService.
+- Because of that mistake, some other modules may have started adding PermissionsService directly to their providers array, creating duplicated providers and inconsistent DI.
+
+Tasks:
+
+1. Fix PermissionsModule export.
+   Inspect src/modules-system/permissions/permissions.module.ts.
+   Change it from exporting PermissionsModule to exporting PermissionsService.
+
+   Correct pattern:
+
+   @Module({
+     providers: [PermissionsService],
+     exports: [PermissionsService],
+   })
+   export class PermissionsModule {}
+
+2. Inspect all modules that use PermissionsService.
+   Search for:
+   - providers: [PermissionsService]
+   - PermissionsService in module providers
+   - imports of PermissionsService inside *.module.ts files
+
+   Fix the chain of mistakes:
+   - Modules should NOT provide PermissionsService manually.
+   - Modules that need PermissionsService should import PermissionsModule.
+   - Keep PermissionsService provider centralized inside PermissionsModule.
+
+3. Refactor MySharedDocumentsModule.
+   It should import PermissionsModule.
+   It should provide only MySharedDocumentsService and its controller.
+   Do not list PermissionsService in providers.
+
+4. Refactor MySharedDocumentsService.
+   Inject PermissionsService through constructor.
+
+   Example:
+
+   constructor(
+     @InjectModel('DocumentPermission')
+     private readonly documentPermissionModel: Model<DocumentPermission>,
+
+     private readonly permissionsService: PermissionsService,
+   ) {}
+
+5. Remove local mapRoleToPermissions() from MySharedDocumentsService.
+   Shared-with-me must not manually map:
+   - viewer -> document:view
+   - commenter -> document:view/comment
+   - editor -> document:view/edit/comment
+
+   That logic belongs to PermissionsService.
+
+6. Refactor getSharedWithMeDocumentDetail().
+   Keep the existing DocumentPermission query because this endpoint is for documents directly shared with the current user.
+   But after loading the document, resolve permissions through PermissionsService.
+
+   Use:
+   - workspaceId from populated document.workspaceId
+   - documentId from populated document._id
+   - userId from current user
+
+   Return:
+   - role: effective role if available, otherwise permission.role
+   - permissions: result from PermissionsService
+
+   Prefer these service calls if they already exist:
+   - getAvailableDocumentPermissions(userId, workspaceId, documentId)
+   - getEffectiveDocumentRole(userId, workspaceId, documentId)
+
+   If method names differ, use the existing equivalent methods from PermissionsService.
+
+7. Refactor getSharedWithMeDocuments().
+   Shared-with-me list should also return permissions for each item.
+
+   Avoid N+1 if possible:
+   - after fetching permissions and populated documents, group documents by workspaceId
+   - call existing bulk permission resolver from PermissionsService if available, such as getBulkDocumentPermissions(userId, workspaceId, documentIds)
+   - map permissions back by documentId
+
+   If no bulk resolver exists, use getAvailableDocumentPermissions per item for now, but keep code clean.
+
+8. Normalize shared document response shape.
+   For detail endpoint, do not return populated user object under ownerId.
+   Return:
+
+   ownerId: string | null
+   owner: {
+     _id: string
+     fullName: string
+     email: string
+     avatarUrl: string | null
+   } | null
+
+   Keep existing fields:
+   - _id
+   - workspaceId
+   - workspaceName
+   - title
+   - sourceType
+   - markdownContent
+   - fileSize
+   - extractedTextPreview
+   - extractedTextCharCount
+   - extractedTextLimit
+   - isExtractedTextTruncated
+   - processingStatus
+   - pdfStorageKey
+   - pdfFileUrl
+   - role
+   - permissions
+   - sharedAt
+   - createdAt
+   - updatedAt
+
+   For list endpoint, also include:
+   - permissions
+   - owner
+   - role
+   - workspaceId
+   - workspaceName
+
+9. Keep the access rule of shared-with-me.
+   Only documents with explicit DocumentPermission roles should appear:
+   - viewer
+   - commenter
+   - editor
+
+   Do not include owner role in shared-with-me list.
+
+10. Do not change routes, controller names, DTOs, or FE contract unless necessary.
+    The goal is DI cleanup and permission consistency only.
+
+Acceptance criteria:
+1. PermissionsModule exports PermissionsService, not PermissionsModule.
+2. No feature module manually provides PermissionsService unless it is PermissionsModule itself.
+3. Any module needing PermissionsService imports PermissionsModule.
+4. MySharedDocumentsService no longer has mapRoleToPermissions().
+5. Shared-with-me detail returns permissions from PermissionsService.
+6. Shared-with-me list returns permissions from PermissionsService.
+7. Response shape is compatible with normal Document detail so FE can reuse DocumentDetailExperience.
+8. App compiles with npm run build.
+9. Existing document permission guards and document module behavior still work.
+10. No circular dependency error is introduced.

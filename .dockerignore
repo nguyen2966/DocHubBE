@@ -1,0 +1,14 @@
+node_modules
+dist
+coverage
+.git
+.gitignore
+.env
+.env.*
+storage
+npm-debug.log
+.DS_Store
+Documents
+.agents
+README.md
+temp.txt

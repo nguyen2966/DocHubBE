@@ -1,48 +1,92 @@
-import { Injectable, CanActivate, ExecutionContext, UnauthorizedException, ForbiddenException } from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
-import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
-import { TokenService } from 'src/modules-system/token/token.service';
-import { TokenPayload } from 'src/modules-system/token/token.type';
-import { TokenExpiredError } from 'jsonwebtoken';
+import {
+  Injectable,
+  CanActivate,
+  ExecutionContext,
+  UnauthorizedException,
+  ForbiddenException,
+} from '@nestjs/common'
+import { Reflector } from '@nestjs/core'
+import { InjectModel } from '@nestjs/mongoose'
+import { Model } from 'mongoose'
+import { TokenExpiredError } from 'jsonwebtoken'
+import { IS_PUBLIC_KEY } from '../decorators/public.decorator'
+import { IS_OPTIONAL_AUTH_KEY } from '../decorators/optional-auth.decorator'
+import { TokenService } from 'src/modules-system/token/token.service'
+import { TokenPayload } from 'src/modules-system/token/token.type'
+import { User } from 'src/modules-system/mongodb/schemas/users'
 
 @Injectable()
 export class ProtectGuard implements CanActivate {
-    constructor(private reflector: Reflector, private tokenService: TokenService) {}
-  async canActivate(
-    context: ExecutionContext,
-  ): Promise<boolean> {
+  constructor(
+    private readonly reflector: Reflector,
+    private readonly tokenService: TokenService,
+    @InjectModel(User.name)
+    private readonly userModel: Model<User>,
+  ) { }
 
-    const req = context.switchToHttp().getRequest();
-    const { accessToken } = req.cookies;
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+
+    const isOptionalAuth = this.reflector.getAllAndOverride<boolean>(
+      IS_OPTIONAL_AUTH_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+
+    if (isPublic) return true;
+
+    const req = context.switchToHttp().getRequest()
+    const { accessToken } = req.cookies
+
+    if (!accessToken) {
+      if (isOptionalAuth) return true;
+      throw new UnauthorizedException('Access token not found')
+    }
 
     try {
-        const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [context.getHandler(), context.getClass()])
-        if (isPublic){
-            return true;
-        }
+      // 1. Verify chữ ký và hạn của token
+      const payload: TokenPayload = this.tokenService.verifyAccessToken(accessToken)
 
+      // 2. Kiểm tra blacklist — token bị revoke sau logout hoặc bị lộ
+      const isRevoked = await this.tokenService.isAccessTokenRevoked(payload.jti)
+      if (isRevoked) {
+        throw new UnauthorizedException('Token has been revoked')
+      }
 
-        if (!accessToken) throw new UnauthorizedException("Not Found Token");
+      // 3. Tìm user trong DB — đảm bảo account vẫn tồn tại và chưa bị khoá
+      const user = await this.userModel
+        .findById(payload.sub)
+        .select('-passwordHash')
+        .lean()
 
-        const decode: TokenPayload = this.tokenService.verifyAccessToken(accessToken);
+      if (!user) {
+        throw new UnauthorizedException('User not found')
+      }
 
-        //Tìm user trong DB ở đây
-        let user = "";
-        req.user = user;
+      // 4. Attach vào request để các handler và service phía sau dùng
+      //    - user: dùng cho business logic
+      //    - tokenPayload: dùng riêng cho logout (cần jti và exp)
+      req.user = user;
+      req.tokenPayload = payload;
 
-        if (!user) throw new UnauthorizedException("Xác thực thất bại");
-        return true;
-    } catch (error: any){
-        console.log({error})
-        switch (error.constructor) {
-            case TokenExpiredError:
-                throw new ForbiddenException(error.message);
-                break;
-        
-            default:
-                throw new UnauthorizedException("Authentication Error")
-                break;
-        }
+      return true;
+    } catch (error: any) {
+      if (isOptionalAuth) return true;
+
+      if (error instanceof TokenExpiredError) {
+        throw new UnauthorizedException('Access token expired')
+      }
+      // Ném lại các lỗi đã được format sẵn (Unauthorized, Forbidden từ trên)
+      if (
+        error instanceof UnauthorizedException ||
+        error instanceof ForbiddenException
+      ) {
+        throw error
+      }
+      // Lỗi không xác định (token malformed, DB lỗi, v.v.)
+      throw new UnauthorizedException('Authentication failed')
     }
   }
 }

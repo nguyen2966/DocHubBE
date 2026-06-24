@@ -1,34 +1,246 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import {
+  Controller, Get, Post, Patch, Delete,
+  Param, Body, UseGuards, Req, UploadedFile, UseInterceptors,
+  BadRequestException, Query,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { WorkspacePermissionGuard } from '../../modules-system/permissions/guards/workspace-permission.guard';
+import { DocumentPermissionGuard } from '../../modules-system/permissions/guards/document-permission.guard';
+import { RequireWorkspacePermission } from 'src/modules-system/permissions/decorators/require-workspace-permission.decorator';
+import { RequireDocumentPermissions } from 'src/modules-system/permissions/decorators/require-document-permission.decorator';
 import { DocumentService } from './document.service';
 import { CreateDocumentDto } from './dto/create-document.dto';
-import { UpdateDocumentDto } from './dto/update-document.dto';
+import { UploadPdfDto } from './dto/upload-pdf.dto';
+import { ApiConsumes, ApiBody } from '@nestjs/swagger';
+import { RenameDocumentDto } from './dto/rename-document.dto';
+import { type Request } from 'express';
+import { PermissionsService } from 'src/modules-system/permissions/permissions.service';
+import { UploadJobService } from './upload-job.service';
+import { PagePaginationResponseInterceptor } from 'src/common/interceptors/page-paginated.interceptor';
+import { DocumentListQueryDto } from './dto/document-list-query.dto';
 
-@Controller('document')
+@Controller('workspaces/:workspaceId/documents')
+@UseGuards(WorkspacePermissionGuard)
 export class DocumentController {
-  constructor(private readonly documentService: DocumentService) {}
+  constructor(private readonly documentService: DocumentService,
+    private readonly permissionsService: PermissionsService,
+    private readonly uploadJobService: UploadJobService
+  ) { }
 
+  // 1. Markdown Flow
   @Post()
-  create(@Body() createDocumentDto: CreateDocumentDto) {
-    return this.documentService.create(createDocumentDto);
+  @RequireWorkspacePermission('workspace:create_document')
+  createMarkdown(
+    @Param('workspaceId') workspaceId: string,
+    @Body() dto: CreateDocumentDto,
+    @Req() req: any
+  ) {
+    if (dto.sourceType !== 'md_editor') {
+      throw new BadRequestException('Invalid source type for this endpoint');
+    }
+    return this.documentService.createMarkdown(workspaceId, req.user._id.toString(), dto);
   }
 
+  // 2. PDF Upload Flow
+  @Post('upload')
+  @RequireWorkspacePermission('workspace:create_document')
+  @ApiConsumes('multipart/form-data') // Khai báo nhận form-data chứa file
+  @ApiBody({
+    description: 'Upload file PDF kèm theo thông tin tài liệu',
+    type: UploadPdfDto,
+  })
+  @UseInterceptors(FileInterceptor('file', {
+    limits: { fileSize: 20 * 1024 * 1024 }, // Max 20MB
+    fileFilter: (req, file, cb) => {
+      if (file.mimetype !== 'application/pdf') {
+        return cb(new BadRequestException('Only accept PDF'), false);
+      }
+      cb(null, true);
+    }
+  }))
+  async uploadPdf(
+    @Param('workspaceId') workspaceId: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Body() dto: UploadPdfDto, // Sử dụng DTO mới tạo
+    @Req() req: any
+  ) {
+    if (!file) throw new BadRequestException('File is required');
+    if (!dto.jobId) throw new BadRequestException('jobId is required')
+
+    // Tạo job trước → trả jobId về frontend ngay
+    const jobId = dto.jobId;
+    // Lấy title từ dto, nếu không có thì lấy tên gốc của file (bỏ đuôi .pdf)
+    const title = dto.title || file.originalname.replace(/\.pdf$/i, '');
+
+    return this.documentService.uploadPdf(workspaceId, req.user._id.toString(), file, title, jobId);
+  }
+
+  @Post('upload-jobs')
+  @RequireWorkspacePermission('workspace:create_document')
+  async createUploadJob(
+    @Param('workspaceId') workspaceId: string,
+  ) {
+    const jobId = await this.uploadJobService.create(workspaceId);
+
+    return { jobId }
+  }
+
+  @Delete('upload/:jobId/cancel')
+  @RequireWorkspacePermission('workspace:create_document')
+  cancelUpload(
+    @Param('workspaceId') workspaceId: string,
+    @Param('jobId') jobId: string,
+    @Req() req: any,
+  ) {
+    return this.documentService.cancelUpload(
+      jobId,
+      workspaceId,
+      req.user._id.toString(),
+    )
+  }
+
+  @Patch(':documentId/content')
+  @UseGuards(DocumentPermissionGuard)
+  @RequireDocumentPermissions('document:edit')
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({ description: 'Edited PDF exported from Apryse' })
+  @UseInterceptors(FileInterceptor('file', {
+    fileFilter: (_req, file, cb) => {
+      if (file.mimetype !== 'application/pdf') {
+        return cb(new BadRequestException('Only PDF files are accepted'), false);
+      }
+      cb(null, true);
+    },
+  }))
+  editPdf(
+    @Param('documentId') documentId: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Body('editedRects') editedRects: string | undefined,
+    @Body('degradedAnnotationIds') degradedAnnotationIds: string | undefined,
+    @Req() req: any,
+  ) {
+    if (!file) throw new BadRequestException('File is required');
+
+    // debug only: trace multipart fields received by the edit PDF endpoint.
+    console.log('[PDF_EDIT_DEBUG] controller.editPdf received', {
+      documentId,
+      fileSize: file.size,
+      fileMimeType: file.mimetype,
+      hasEditedRects: typeof editedRects === 'string',
+      editedRectsLength: editedRects?.length ?? 0,
+      editedRectsPreview: editedRects?.slice(0, 500) ?? null,
+      hasDegradedAnnotationIds: typeof degradedAnnotationIds === 'string',
+      degradedAnnotationIdsLength: degradedAnnotationIds?.length ?? 0,
+      degradedAnnotationIdsPreview:
+        degradedAnnotationIds?.slice(0, 500) ?? null,
+    });
+
+    return this.documentService.editPdf(
+      documentId,
+      file.buffer,
+      req.user._id.toString(),
+      editedRects,
+      degradedAnnotationIds,
+    );
+  }
+
+  // Lấy danh sách
   @Get()
-  findAll() {
-    return this.documentService.findAll();
+  @RequireWorkspacePermission('workspace:view')
+  @UseInterceptors(PagePaginationResponseInterceptor)
+  async findAll(
+    @Param('workspaceId') workspaceId: string,
+    @Req() req: Request,
+    @Query() query: DocumentListQueryDto,
+  ) {
+    const userId = req.user?._id.toString();
+
+    // 1. Lấy danh sách documents gốc từ service
+    const result = await this.documentService.findByWorkspace(
+      workspaceId,
+      query,
+    );
+    const documents = result.items;
+
+    if (!documents.length) {
+      return {
+        ...result,
+        items: [],
+      };
+    }
+
+    // 2. Gom toàn bộ Document ID lại thành mảng
+    const docIds = documents.map(doc => doc._id.toString());
+
+    // 3. Tính toán permission một lần cho tất cả (chống N+1 query)
+    const permissionsMap = await this.permissionsService.getBulkDocumentPermissions(
+      userId as string,
+      workspaceId,
+      docIds
+    );
+
+    // 4. Map data trả về cho Frontend
+    return {
+      ...result,
+      items: documents.map(doc => ({
+        ...doc,
+        permissions: permissionsMap[doc._id.toString()] || [],
+      })),
+    };
   }
 
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.documentService.findOne(+id);
+  // Xem document
+  @Get(':documentId')
+  @UseGuards(DocumentPermissionGuard)
+  @RequireDocumentPermissions('document:view')
+  async findOne(@Param('documentId') documentId: string, @Param('workspaceId') workspaceId: string, @Req() req: Request) {
+    const userId = req.user?._id.toString();
+
+    // 1. Lấy dữ liệu metadata của tài liệu từ Database
+    const documentData = await this.documentService.findById(documentId);
+
+    // 2. Tra cứu mảng quyền cụ thể của người dùng này đối với tài liệu hiện tại
+    const allowedPermissions = await this.permissionsService.getAvailableDocumentPermissions(
+      userId as string,
+      workspaceId,
+      documentId,
+    );
+
+    // 3. Gộp quyền vào payload trả về cho Frontend
+    return {
+      ...documentData,
+      permissions: allowedPermissions, // Dạng: ["document:view", "document:edit", "document:comment"]
+    };
   }
 
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateDocumentDto: UpdateDocumentDto) {
-    return this.documentService.update(+id, updateDocumentDto);
+  // Đổi tên
+  @Patch(':documentId/rename')
+  @UseGuards(DocumentPermissionGuard)
+  @RequireDocumentPermissions('document:rename')
+  @ApiBody({ type: RenameDocumentDto })
+  rename(
+    @Param('workspaceId') workspaceId: string,
+    @Param('documentId') documentId: string,
+    @Body() body: RenameDocumentDto,
+    @Req() req: any,
+  ) {
+    return this.documentService.rename(documentId, workspaceId, req.user._id.toString(), body)
   }
 
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.documentService.remove(+id);
+  // Xóa document
+  @Delete(':documentId')
+  @UseGuards(DocumentPermissionGuard)
+  @RequireDocumentPermissions('document:delete')
+  remove(@Param('documentId') documentId: string, @Req() req: any) {
+    return this.documentService.delete(documentId, req.user._id.toString())
+  }
+
+  
+  // Lấy danh sách thành viên có quyền
+  @Get(':documentId/members')
+  @UseGuards(DocumentPermissionGuard)
+  @RequireDocumentPermissions('document:manage_access')
+  getMembers(@Param('documentId') documentId: string) {
+    return this.documentService.getMembers(documentId)
   }
 }
