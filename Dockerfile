@@ -22,4 +22,4 @@ RUN mkdir -p /app/storage
 
 EXPOSE 3000
 
-CMD ["npm", "run", "start:dev"]
+CMD ["sh", "-c", "npm run seed:roles && npm run start:dev"]
