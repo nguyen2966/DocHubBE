@@ -19,6 +19,7 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "seed:roles": "ts-node -r tsconfig-paths/register src/database/seeders/role.seeder.ts",
+    "seed:roles:prod": "node dist/database/seeders/role.seeder.js",
     "migrate:object-ids:dry-run": "ts-node -r tsconfig-paths/register src/database/migrations/normalize-object-id-fields.ts",
     "migrate:object-ids": "ts-node -r tsconfig-paths/register src/database/migrations/normalize-object-id-fields.ts --execute"
   },

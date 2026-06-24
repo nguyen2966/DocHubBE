@@ -6,12 +6,23 @@ services:
       - "27017:27017"
     volumes:
       - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   redis:
     image: redis:7-alpine
     container_name: dochub-redis
     ports:
       - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   backend:
     build:
       context: .
@@ -22,32 +33,11 @@ services:
     env_file:
       - ./.env
     volumes:
-      - ./:/app
-      - backend_node_modules:/app/node_modules
       - backend_storage:/app/storage
     depends_on:
       redis:
-        condition: service_started
-
-  frontend:
-    build:
-      context: ../DocHubFE
-      dockerfile: Dockerfile
-    container_name: dochub-frontend
-    ports:
-      - "5173:5173"
-    env_file:
-      - ../DocHubFE/.env
-    environment:
-      CHOKIDAR_USEPOLLING: "true"
-    volumes:
-      - ../DocHubFE:/app
-      - frontend_node_modules:/app/node_modules
-    depends_on:
-      - backend
+        condition: service_healthy
 
 volumes:
   mongodb_data:
   backend_storage:
-  backend_node_modules:
-  frontend_node_modules:
