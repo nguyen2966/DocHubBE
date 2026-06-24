@@ -1,5 +1,5 @@
-import { CookieOptions } from 'express'
-import { EMAIL_VERIFY_TTL_MINUTES } from './app.constants'
+import { CookieOptions } from 'express';
+import { EMAIL_VERIFY_TTL_MINUTES } from './app.constants';
 
 export const ACCESS_TOKEN_COOKIE_OPTIONS: CookieOptions = {
   httpOnly: true,
