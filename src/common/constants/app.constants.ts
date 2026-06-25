@@ -29,3 +29,10 @@ export const REDIS_PASSWORD = process.env.REDIS_PASSWORD;
 export const INVITATION_TTL_DAYS = process.env.INVITATION_TTL_DAYS;
 
 export const LOCAL_STORAGE_ROOT = process.env.LOCAL_STORAGE_ROOT;
+
+export const STORAGE_PROVIDER = process.env.STORAGE_PROVIDER ?? 'local'
+
+export const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
+export const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY;
+export const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET;
+export const CLOUDINARY_FOLDER = process.env.CLOUDINARY_FOLDER ?? 'dochub';
